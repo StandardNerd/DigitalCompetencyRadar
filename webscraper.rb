@@ -1,6 +1,7 @@
 require 'watir'
 require 'selenium-webdriver'
 require 'optparse'
+# require 'byebug'
 
 module SiteHelper
   # Chrome options for Docker environment
@@ -118,69 +119,204 @@ class Page < BrowserContainer
 end
 
 class Interamt < Page
-  # URL = "https://interamt.de/koop/app/trefferliste".freeze # All job listings
-  URL = "https://interamt.de/koop/app/stellensuche".freeze # Job search page
+  URL = "https://interamt.de/koop/app/trefferliste".freeze # All job listings
 
   def initialize(browser)
     super(browser, URL)
   end
 
-  def collect_job_ids(target_count = 10_000, checkpoint_interval = 5)
+  def collect_job_ids(target_count = 100, checkpoint_interval = 3, resume_from = nil)
     # Initialize data structures
     collected_jobs = []
-    checkpoint_counter = 0
+    processed_ids = []
+    batch_number = 0
+    
+    # If resuming from a checkpoint
+    if resume_from
+      checkpoint_data = load_checkpoint(resume_from)
+      if checkpoint_data
+        collected_jobs = checkpoint_data['jobs']
+        batch_number = checkpoint_data['batch_number']
+        processed_ids = collected_jobs.select { |job| job['processed'] }.map { |job| job['id'] }
+        puts "Resuming job collection from batch #{batch_number} with #{collected_jobs.length} jobs already collected"
+      end
+    end
     
     while collected_jobs.length < target_count
       # Extract job information from current visible listings
       new_jobs = extract_visible_job_info
       
-      # Add to collection, avoiding duplicates
-      collected_jobs |= new_jobs
+      # Add to collection, avoiding duplicates by ID
+      new_ids = new_jobs.map { |job| job['id'] }
+      existing_ids = collected_jobs.map { |job| job['id'] }
+      
+      # Only add jobs we haven't seen before
+      new_jobs.each do |job|
+        unless existing_ids.include?(job['id'])
+          collected_jobs << job
+        end
+      end
       
       puts "Collected #{collected_jobs.length} jobs so far (target: #{target_count})"
       
       # Save checkpoint periodically
-      if (checkpoint_counter % checkpoint_interval == 0)
-        save_checkpoint(collected_jobs)
+      if (batch_number % checkpoint_interval == 0)
+        create_checkpoint(collected_jobs, processed_ids, "id_collection", batch_number)
       end
       
       # Try to load more results
-      more_available = load_more_results(1)
+      more_available = load_more_results(3)
       break unless more_available
       
-      checkpoint_counter += 1
+      batch_number += 1
     end
     
     # Final save
-    save_checkpoint(collected_jobs)
+    create_checkpoint(collected_jobs, processed_ids, "id_collection", batch_number)
     puts "Completed job ID collection. Total jobs collected: #{collected_jobs.length}"
     
     collected_jobs
   end
   
+  # This method will collect job IDs by repeatedly clicking the "load more" button
+  def collect_all_job_ids(target_count = 10_000, checkpoint_interval = 5)
+    # Initialize data structures
+    collected_jobs = []
+    batch_number = 0
+    
+    puts "Starting job ID collection process, target: #{target_count}"
+    take_screenshot("initial_page_#{Time.now.to_i}.png")
+
+    while collected_jobs.length < target_count
+      # First, wait for the table to load
+      begin
+        browser.wait_until(timeout: 30) { browser.tbody.exists? }
+      rescue Watir::Wait::TimeoutError
+        puts "Table not found after waiting 30 seconds - no more results or page error"
+        break
+      end
+      
+      # Extract job information from currently visible listings
+      new_jobs = extract_visible_job_info
+      puts "Found #{new_jobs.length} jobs in current view"
+      
+      # Add to collection, avoiding duplicates
+      before_count = collected_jobs.length
+      collected_jobs |= new_jobs  # Union operation to avoid duplicates
+      after_count = collected_jobs.length
+      
+      puts "Added #{after_count - before_count} new jobs, total now: #{collected_jobs.length} (target: #{target_count})"
+      
+      # Save checkpoint periodically
+      if (batch_number % checkpoint_interval == 0)
+        create_checkpoint(collected_jobs, [], "id_collection", batch_number)
+      end
+      
+      # Stop if we've reached our target
+      if collected_jobs.length >= target_count
+        puts "Reached target count of #{target_count} jobs"
+        break
+      end
+      
+      # Try to load more results - if no more results are available, break the loop
+      if !click_load_more_button
+        puts "No more results available - reached end of job listings"
+        break
+      end
+      
+      batch_number += 1
+    end
+    
+    # Final save
+    create_checkpoint(collected_jobs, [], "id_collection", batch_number)
+    puts "Completed job ID collection. Total jobs collected: #{collected_jobs.length}"
+    
+    collected_jobs
+  end
+
+  # Dedicated method to click the load more button
+  def click_load_more_button
+    puts "Looking for 'mehr laden' button..."
+    load_more_button = nil
+    
+    # Try finding by ID first
+    if browser.button(id: 'id1').exists?
+      load_more_button = browser.button(id: 'id1')
+    # Try finding by class
+    elsif browser.button(class: /ia-m-searchresultsbtn-load/).exists?
+      load_more_button = browser.button(class: /ia-m-searchresultsbtn-load/)
+    # Try finding by the span label
+    elsif browser.button { |btn| btn.span(class: 'ia-e-buttonlabel', text: 'mehr laden').exists? }.exists?
+      load_more_button = browser.button { |btn| btn.span(class: 'ia-e-buttonlabel', text: 'mehr laden').exists? }
+    end
+    
+    # If we can't find the button or it's not visible, we might have reached the end
+    if load_more_button.nil? || !load_more_button.exists? || !load_more_button.visible?
+      puts "No 'mehr laden' button found. All results may be loaded."
+      take_screenshot("no_more_button_found_#{Time.now.to_i}.png")
+      return false
+    end
+    
+    # Scroll to the button to ensure it's in view
+    browser.execute_script("arguments[0].scrollIntoView(true);", load_more_button)
+    sleep 1
+    
+    # Take a screenshot before clicking
+    take_screenshot("before_clicking_load_more_#{Time.now.to_i}.png")
+    
+    # Click the button
+    begin
+      load_more_button.click
+      puts "Clicked 'mehr laden' button"
+      
+      # Wait for new results to load - dynamic wait with visual confirmation
+      wait_time = 5
+      puts "Waiting #{wait_time} seconds for new results to load..."
+      sleep wait_time
+      
+      # Take a screenshot after clicking
+      take_screenshot("after_clicking_load_more_#{Time.now.to_i}.png")
+      
+      # Wait for the table to update - look for the table to be present again
+      browser.wait_until(timeout: 30) { browser.tbody.exists? }
+      
+      return true
+    rescue => e
+      puts "Error clicking 'mehr laden' button: #{e.message}"
+      take_screenshot("error_clicking_load_more_#{Time.now.to_i}.png")
+      return false
+    end
+  end
+
   def extract_visible_job_info
     jobs = []
     
     if browser.tbody.exists?
       rows = browser.tbody.trs
-      
+      puts "Found #{rows.length} rows in tbody"
+
       rows.each do |row|
-        # Extract StellenangebotId from the first span within the link
-        stellenangebot_id_td = row.td(data_field: 'StellenangebotId')
-        job_id = stellenangebot_id_td.link.span(index: 0).text.strip
-        
+        puts "row.html #{row.html}"
+        stellenangebot_id = row.td(data_field: 'StellenangebotId').span.text.strip
+        puts "stellenangebot_id_td.text: #{stellenangebot_id}"
         behoerde = row.td(data_field: 'Behoerde').text.strip
+        puts "behoerde: #{behoerde}"
         stellenbezeichnung = row.td(data_field: 'Stellenbezeichnung').text.strip
-        
+        puts "stellenbezeichnung: #{stellenbezeichnung}"
+
         jobs << {
-          id: clean_text(job_id),
+          id: clean_text(stellenangebot_id),
           behoerde: clean_text(behoerde),
           stellenbezeichnung: clean_text(stellenbezeichnung),
           processed: false
         }
+        puts "--------------------"
+        puts "jobs: #{jobs.inspect}"
       end
     end
-    
+
+    puts "======================="
+    puts "collected jobs so far: #{jobs.inspect}"
     jobs
   end
 
@@ -200,6 +336,68 @@ class Interamt < Page
     puts "Saved checkpoint with #{collected_jobs.length} jobs to #{filename}"
   end
 
+  def create_checkpoint(collected_jobs, processed_ids = [], current_phase = "id_collection", batch_number = 0)
+    Dir.mkdir('job_scraper_checkpoints') unless Dir.exist?('job_scraper_checkpoints')
+    timestamp = Time.now.strftime('%Y%m%d_%H%M%S')
+    
+    # Get the last processed ID if any jobs have been processed
+    last_processed_id = processed_ids.empty? ? nil : processed_ids.last
+    
+    # Calculate statistics
+    total_ids_collected = collected_jobs.length
+    details_fetched = processed_ids.length
+    
+    checkpoint_data = {
+      timestamp: timestamp,
+      last_processed_id: last_processed_id,
+      current_phase: current_phase,
+      batch_number: batch_number,
+      statistics: {
+        total_ids_collected: total_ids_collected,
+        details_fetched: details_fetched,
+        remaining_jobs: total_ids_collected - details_fetched
+      },
+      jobs: collected_jobs
+    }
+    
+    # Create filename with phase and batch information
+    filename = File.join('job_scraper_checkpoints', "checkpoint_#{current_phase}_batch#{batch_number}_#{timestamp}.json")
+    File.write(filename, JSON.generate(checkpoint_data))
+    
+    # Also save a "latest" checkpoint file that's overwritten each time
+    latest_filename = File.join('job_scraper_checkpoints', "checkpoint_latest.json")
+    File.write(latest_filename, JSON.generate(checkpoint_data))
+    
+    puts "Saved checkpoint with #{total_ids_collected} jobs collected and #{details_fetched} details fetched to #{filename}"
+    
+    return filename
+  end
+
+  def load_checkpoint(filename = nil)
+    # If no filename is provided, try to load the latest checkpoint
+    if filename.nil?
+      latest_file = File.join('job_scraper_checkpoints', "checkpoint_latest.json")
+      if File.exist?(latest_file)
+        filename = latest_file
+      else
+        puts "No checkpoint file specified and no latest checkpoint found."
+        return nil
+      end
+    end
+    
+    begin
+      checkpoint_data = JSON.parse(File.read(filename))
+      puts "Loaded checkpoint from #{filename}"
+      puts "Phase: #{checkpoint_data['current_phase']}, Batch: #{checkpoint_data['batch_number']}"
+      puts "Statistics: #{checkpoint_data['statistics']['total_ids_collected']} jobs collected, #{checkpoint_data['statistics']['details_fetched']} details fetched"
+      
+      return checkpoint_data
+    rescue => e
+      puts "Error loading checkpoint: #{e.message}"
+      return nil
+    end
+  end
+
   # Update load_more_results to return whether more results are available
   def load_more_results(times = 1)
     puts "Attempting to load more results..."
@@ -208,8 +406,17 @@ class Interamt < Page
     times.times do |i|
       # Look for the "mehr laden" button using multiple selectors
       load_more_button = nil
-      
-      # [existing button finding code]
+  
+      # Try finding by ID first
+      if browser.button(id: 'id1').exists?
+        load_more_button = browser.button(id: 'id1')
+      # Try finding by class
+      elsif browser.button(class: /ia-m-searchresultsbtn-load/).exists?
+        load_more_button = browser.button(class: /ia-m-searchresultsbtn-load/)
+      # Try finding by the span label
+      elsif browser.button { |btn| btn.span(class: 'ia-e-buttonlabel', text: 'mehr laden').exists? }.exists?
+        load_more_button = browser.button { |btn| btn.span(class: 'ia-e-buttonlabel', text: 'mehr laden').exists? }
+      end
       
       # If we can't find the button or it's not visible, we've reached the end
       if load_more_button.nil? || !load_more_button.exists? || !load_more_button.visible?
@@ -583,7 +790,9 @@ class ScraperCLI
         service_bund_page.click_first_n_results(@options[:results])
       when "interamt"
         interamt_page = site.interamt_page
-        interamt_page.load_more_results(30)
+        # interamt_page.load_more_results(30)
+        # interamt_page.collect_job_ids(13)
+        interamt_page.collect_all_job_ids(40)
         # interamt_page.click_first_n_results(@options[:results], @options[:keyword])
       end
     ensure
