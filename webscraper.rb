@@ -222,8 +222,48 @@ class Interamt < Page
     content = browser.div(id: 'ia-tab-primary').text
     content_html = browser.div(id: 'ia-tab-primary').html
 
-    puts "Content for row #{row_number}: #{content}"
+    # puts "Content for row #{row_number}: #{content}"
     File.write(html_filename, content_html)
+  end
+
+  def load_more_results(times = 20)
+    puts "Starting to load more results (#{times} times)..."
+    times_clicked = 0
+    times.times do |i|
+      # Look for the "mehr laden" button using multiple selectors
+      load_more_button = nil
+      
+      # Try finding by ID first
+      if browser.button(id: 'id1').exists?
+        load_more_button = browser.button(id: 'id1')
+      # Try finding by class
+      elsif browser.button(class: /ia-m-searchresults__btn-load/).exists?
+        load_more_button = browser.button(class: /ia-m-searchresults__btn-load/)
+      # Try finding by the span label
+      elsif browser.button { |btn| btn.span(class: 'ia-e-button__label', text: 'mehr laden').exists? }.exists?
+        load_more_button = browser.button { |btn| btn.span(class: 'ia-e-button__label', text: 'mehr laden').exists? }
+      end
+      
+      # If we can't find the button or it's not visible, we might have reached the end
+      if load_more_button.nil? || !load_more_button.exists? || !load_more_button.visible?
+        puts "No more 'mehr laden' button found after #{times_clicked} clicks. All results may be loaded."
+        break
+      end
+      
+      # Click the button
+      load_more_button.click
+      times_clicked += 1
+      puts "Clicked 'mehr laden' button (#{i+1}/#{times})"
+      sleep 2
+      take_screenshot("after_loading_more_results_#{times_clicked}.png")
+
+      # Generate random wait time between 2 and 8 seconds
+      wait_time = 2 + rand(6)
+      puts "Waiting #{wait_time} seconds for new results to load..."
+      sleep wait_time
+    end
+
+    puts "Finished loading more results. Clicked #{times_clicked} times."
   end
 
   def clean_text(text)
@@ -231,8 +271,8 @@ class Interamt < Page
     text.strip.gsub(/\s+/, ' ')
   end
 
-  def take_screenshot(filename)
-    browser.window.resize_to(1200, 1600)
+  def take_screenshot(filename, y=2600)
+    browser.window.resize_to(1200, y)
 
     browser.screenshot.save(filename)
   rescue => e
@@ -247,8 +287,8 @@ class ServiceBund < Page
     super(browser, URL)
   end
 
-  def take_screenshot(filename)
-    browser.window.resize_to(1200, 2600)
+  def take_screenshot(filename, y=2600)
+    browser.window.resize_to(1200, y)
     browser.screenshot.save filename
   rescue => e
     puts "Failed to take screenshot #{filename}: #{e.message}"
@@ -475,7 +515,8 @@ class ScraperCLI
         service_bund_page.click_first_n_results(@options[:results])
       when "interamt"
         interamt_page = site.interamt_page
-        interamt_page.click_first_n_results(@options[:results], @options[:keyword])
+        interamt_page.load_more_results(30)
+        # interamt_page.click_first_n_results(@options[:results], @options[:keyword])
       end
     ensure
       site.close
