@@ -125,6 +125,114 @@ class Interamt < Page
     super(browser, URL)
   end
 
+  def collect_job_ids(target_count = 10_000, checkpoint_interval = 5)
+    # Initialize data structures
+    collected_jobs = []
+    checkpoint_counter = 0
+    
+    while collected_jobs.length < target_count
+      # Extract job information from current visible listings
+      new_jobs = extract_visible_job_info
+      
+      # Add to collection, avoiding duplicates
+      collected_jobs |= new_jobs
+      
+      puts "Collected #{collected_jobs.length} jobs so far (target: #{target_count})"
+      
+      # Save checkpoint periodically
+      if (checkpoint_counter % checkpoint_interval == 0)
+        save_checkpoint(collected_jobs)
+      end
+      
+      # Try to load more results
+      more_available = load_more_results(1)
+      break unless more_available
+      
+      checkpoint_counter += 1
+    end
+    
+    # Final save
+    save_checkpoint(collected_jobs)
+    puts "Completed job ID collection. Total jobs collected: #{collected_jobs.length}"
+    
+    collected_jobs
+  end
+  
+  def extract_visible_job_info
+    jobs = []
+    
+    if browser.tbody.exists?
+      rows = browser.tbody.trs
+      
+      rows.each do |row|
+        # Extract StellenangebotId from the first span within the link
+        stellenangebot_id_td = row.td(data_field: 'StellenangebotId')
+        job_id = stellenangebot_id_td.link.span(index: 0).text.strip
+        
+        behoerde = row.td(data_field: 'Behoerde').text.strip
+        stellenbezeichnung = row.td(data_field: 'Stellenbezeichnung').text.strip
+        
+        jobs << {
+          id: clean_text(job_id),
+          behoerde: clean_text(behoerde),
+          stellenbezeichnung: clean_text(stellenbezeichnung),
+          processed: false
+        }
+      end
+    end
+    
+    jobs
+  end
+
+  def save_checkpoint(collected_jobs)
+    Dir.mkdir('job_id_checkpoints') unless Dir.exist?('job_id_checkpoints')
+    timestamp = Time.now.strftime('%Y%m%d_%H%M%S')
+    
+    checkpoint_data = {
+      timestamp: timestamp,
+      total_jobs_collected: collected_jobs.length,
+      phase: "id_collection",
+      jobs: collected_jobs
+    }
+    
+    filename = File.join('job_id_checkpoints', "job_ids_#{timestamp}.json")
+    File.write(filename, JSON.generate(checkpoint_data))
+    puts "Saved checkpoint with #{collected_jobs.length} jobs to #{filename}"
+  end
+
+  # Update load_more_results to return whether more results are available
+  def load_more_results(times = 1)
+    puts "Attempting to load more results..."
+    times_clicked = 0
+    
+    times.times do |i|
+      # Look for the "mehr laden" button using multiple selectors
+      load_more_button = nil
+      
+      # [existing button finding code]
+      
+      # If we can't find the button or it's not visible, we've reached the end
+      if load_more_button.nil? || !load_more_button.exists? || !load_more_button.visible?
+        puts "No more 'mehr laden' button found after #{times_clicked} clicks."
+        return false
+      end
+      
+      # Click the button
+      load_more_button.click
+      times_clicked += 1
+      puts "Clicked 'mehr laden' button (#{i+1}/#{times})"
+      sleep 2
+
+      # Wait for new results to load
+      wait_time = 2 + rand(3)
+      puts "Waiting #{wait_time} seconds for new results to load..."
+      sleep wait_time
+    end
+    
+    puts "Finished loading more results. Clicked #{times_clicked} times."
+    return true  # More results might be available
+  end
+
   def click_first_n_results(n, keyword = "")
     if n < 1
       raise ArgumentError, "n must be greater than or equal to 1"
@@ -224,46 +332,6 @@ class Interamt < Page
 
     # puts "Content for row #{row_number}: #{content}"
     File.write(html_filename, content_html)
-  end
-
-  def load_more_results(times = 20)
-    puts "Starting to load more results (#{times} times)..."
-    times_clicked = 0
-    times.times do |i|
-      # Look for the "mehr laden" button using multiple selectors
-      load_more_button = nil
-      
-      # Try finding by ID first
-      if browser.button(id: 'id1').exists?
-        load_more_button = browser.button(id: 'id1')
-      # Try finding by class
-      elsif browser.button(class: /ia-m-searchresults__btn-load/).exists?
-        load_more_button = browser.button(class: /ia-m-searchresults__btn-load/)
-      # Try finding by the span label
-      elsif browser.button { |btn| btn.span(class: 'ia-e-button__label', text: 'mehr laden').exists? }.exists?
-        load_more_button = browser.button { |btn| btn.span(class: 'ia-e-button__label', text: 'mehr laden').exists? }
-      end
-      
-      # If we can't find the button or it's not visible, we might have reached the end
-      if load_more_button.nil? || !load_more_button.exists? || !load_more_button.visible?
-        puts "No more 'mehr laden' button found after #{times_clicked} clicks. All results may be loaded."
-        break
-      end
-      
-      # Click the button
-      load_more_button.click
-      times_clicked += 1
-      puts "Clicked 'mehr laden' button (#{i+1}/#{times})"
-      sleep 2
-      take_screenshot("after_loading_more_results_#{times_clicked}.png")
-
-      # Generate random wait time between 2 and 8 seconds
-      wait_time = 2 + rand(6)
-      puts "Waiting #{wait_time} seconds for new results to load..."
-      sleep wait_time
-    end
-
-    puts "Finished loading more results. Clicked #{times_clicked} times."
   end
 
   def clean_text(text)
