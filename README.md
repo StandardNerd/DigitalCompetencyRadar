@@ -55,7 +55,7 @@ Available Options:
 Transmit the job description (from text file) to an LLM with custom prompt and save the response in a file:
 
 ```bash
-ruby api_test.rb
+podman run --network=host -v $(pwd):/app webscraper ruby api_test.rb
 ```
 
 ## Podman/Docker Cheatsheet
