@@ -50,6 +50,14 @@ Available Options:
         --version                    Show version
 ```
 
+5. LLM API Test
+
+Transmit the job description (from text file) to an LLM with custom prompt and save the response in a file:
+
+```bash
+ruby api_test.rb
+```
+
 ## Podman/Docker Cheatsheet
 
 Build the image: `podman build -t webscraper .`
