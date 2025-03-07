@@ -14,56 +14,12 @@ Given Podman (or Docker) is installed and running.
 podman build -t webscraper .
 ```
 
-3. Run Webscraper:
-
-```bash
-podman run -v $(pwd):/app webscraper ruby webscraper.rb --portal interamt
-```
-
-or in case of "Your connection was interrupted" error in the Docker container's browser:
-
-```bash
-podman run --network=host -v $(pwd):/app webscraper ruby webscraper.rb --portal interamt
-```
-
-The webscraper parses the first three job postings – a screenshot of the job listing is also taken – and creates a folder called "scraped_data_interamt" (or "scraped_data_bund" if portal `bund` is used) containing three parsed job postings in separate text files with html code, including the screenshot. The screenshots are for debugging purposes.
-
-4. Webscraper Options:
-
-
-```bash
-Basic Usage:
-  ruby webscraper.rb --portal [bund|interamt]
-
-Examples:
-  ruby webscraper.rb --portal interamt --keyword "Informatiker" --results 8
-  ruby webscraper.rb --portal bund --keyword "Sachbearbeiter" --results 12
-
-Available Options:
-        --portal PORTAL              Required. Specify which job portal to scrape
-                                       bund    - service.bund.de Portal
-                                       interamt - interamt.de Portal
-        --keyword KEYWORD            Search keyword
-        --results N                  Number of results to process
-                                       Default: 1
-        --help                       Show this help message
-        --version                    Show version
-```
-
-5. LLM API Test
-
-Transmit the job description (from text file) to an LLM with custom prompt and save the response in a file:
-
-```bash
-podman run --network=host -v $(pwd):/app webscraper ruby api_test.rb
-```
-
-## Phase 1: Collect Job IDs
+3. ***Phase 1: Collect Job IDs***
 
 Collect job IDs with a specified target count:
 
 ```bash
-podman run --network=host -v $(pwd):/app webscraper ruby webscraper.rb --portal interamt --mode collect --collect-count 5000
+podman run --network=host -v $(pwd):/app webscraper ruby webscraper.rb --portal interamt --mode collect --collect-count 30
 ```
 
 Set a custom checkpoint interval:
@@ -84,9 +40,19 @@ Combine these options as needed:
 ruby webscraper.rb --portal interamt --mode collect --collect-count 8000 --checkpoint-interval 20 --resume-from checkpoint_id_collection_batch5_20250228_120000.json
 ```
 
-## Phase 2: Extract Job Details
+4. ***Phase 2: Extract Job Details***
 
-in branch `feature/phase-2`
+tbd in branch `feature/phase-2`
+
+
+5. LLM API Test
+
+Transmit the job description (from text file) to an LLM with custom prompt and save the response in a file:
+
+```bash
+podman run --network=host -v $(pwd):/app webscraper ruby api_test.rb
+```
+
 
 ## Podman/Docker Cheatsheet
 
