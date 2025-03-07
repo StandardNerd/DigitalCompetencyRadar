@@ -55,7 +55,7 @@ Available Options:
 Transmit the job description (from text file) to an LLM with custom prompt and save the response in a file:
 
 ```bash
-ruby api_test.rb
+podman run --network=host -v $(pwd):/app webscraper ruby api_test.rb
 ```
 
 ## Phase 1: Collect Job IDs
@@ -86,6 +86,7 @@ ruby webscraper.rb --portal interamt --mode collect --collect-count 8000 --check
 
 ## Phase 2: Extract Job Details
 
+in branch `feature/phase-2`
 
 ## Podman/Docker Cheatsheet
 
