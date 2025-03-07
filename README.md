@@ -78,6 +78,11 @@ ruby webscraper.rb --portal interamt --mode collect --collect-count 8000 --check
 
 ## Phase 2: Extract Job Details
 
+Collect job posting:
+
+```bash
+podman run --network=host -v $(pwd):/app webscraper ruby webscraper.rb --portal interamt --mode extract
+```
 
 ## Podman/Docker Cheatsheet
 
