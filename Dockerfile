@@ -33,11 +33,15 @@ RUN bundle install
 # Copy the rest of the application
 COPY . .
 
+# Define a build-time argument
+ARG API_KEY
+
 # Set environment variables
 ENV LANG=C.UTF-8 \
     CHROME_BIN=/usr/bin/chromium \
     CHROME_PATH=/usr/lib/chromium/ \
-    CHROME_OPTIONS='--headless --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-software-rasterizer'
+    CHROME_OPTIONS='--headless --no-sandbox --disable-dev-shm-usage --disable-gpu --disable-software-rasterizer' \
+    API_KEY=$API_KEY
 
 # Verify ChromeDriver installation
 RUN chromedriver --version

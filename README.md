@@ -11,7 +11,7 @@ Given Podman (or Docker) is installed and running.
 2. Build Container:
 
 ```bash
-podman build -t webscraper .
+docker build --build-arg API_KEY='echo $API_KEY' -t webscraper .
 ```
 
 3. ***Phase 1: Collect Job IDs***
@@ -47,11 +47,21 @@ tbd in branch `feature/phase-2`
 
 5. LLM API Test
 
-Transmit the job description (from text file) to an LLM with custom prompt and save the response in a file:
+Requirement:
+The task requires the use of a personalized API key, which is stored as a shell environment variable (API_KEY). For example, the key can be set in your shell configuration file (.bashrc or .zshrc) as follows:
 
 ```bash
-podman run --network=host -v $(pwd):/app webscraper ruby api_test.rb
+export API_KEY=your_api_key_here
 ```
+
+The goal is to transmit the content of a job description (stored in a text file) to a Large Language Model (LLM) using a custom prompt. The LLM's response should then be saved to a file.
+
+To achieve this, you can use the following podman command. This command mounts the current working directory into the container, passes the API_KEY environment variable, and executes the Ruby script api_test.rb:
+
+```bash
+podman run -v $(pwd):/app -e API_KEY=$(echo $API_KEY) webscraper ruby api_test.rb
+```
+
 
 
 ## Podman/Docker Cheatsheet

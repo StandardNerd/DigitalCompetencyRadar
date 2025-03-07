@@ -3,7 +3,7 @@
 require 'openai'
 
 # API configuration
-access_token = ENV['ACADEMICCLOUD_API_KEY']
+access_token = ENV['API_KEY']
 api_base = 'https://chat-ai.academiccloud.de/v1'
 model = 'llama-3.1-nemotron-70b-instruct'
 
