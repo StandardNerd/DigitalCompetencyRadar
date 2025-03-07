@@ -1,6 +1,7 @@
 require 'watir'
 require 'selenium-webdriver'
 require 'optparse'
+require 'set'
 # require 'byebug'
 
 module SiteHelper
@@ -125,74 +126,44 @@ class Interamt < Page
     super(browser, URL)
   end
 
-  def collect_job_ids(target_count = 100, checkpoint_interval = 3, resume_from = nil)
+  def collect_all_job_ids(target_count = 10_000, checkpoint_interval = 5, resume_from = nil)
     # Initialize data structures
     collected_jobs = []
-    processed_ids = []
     batch_number = 0
+    job_id_set = Set.new  # Use a Set for O(1) lookups when checking if ID exists
     
     # If resuming from a checkpoint
     if resume_from
       checkpoint_data = load_checkpoint(resume_from)
       if checkpoint_data
         collected_jobs = checkpoint_data['jobs']
-        batch_number = checkpoint_data['batch_number']
-        processed_ids = collected_jobs.select { |job| job['processed'] }.map { |job| job['id'] }
-        puts "Resuming job collection from batch #{batch_number} with #{collected_jobs.length} jobs already collected"
-      end
-    end
-    
-    while collected_jobs.length < target_count
-      # Extract job information from current visible listings
-      new_jobs = extract_visible_job_info
-      
-      # Add to collection, avoiding duplicates by ID
-      new_ids = new_jobs.map { |job| job['id'] }
-      existing_ids = collected_jobs.map { |job| job['id'] }
-      
-      # Only add jobs we haven't seen before
-      new_jobs.each do |job|
-        unless existing_ids.include?(job['id'])
-          collected_jobs << job
+        batch_number = checkpoint_data['batch_number'] + 1  # Start from next batch
+        
+        # Initialize the set with existing IDs for quick lookups
+        collected_jobs.each do |job|
+          job_id_set.add(job['id'])
         end
+        
+        puts "Resuming job collection from batch #{batch_number} with #{collected_jobs.length} jobs already collected"
+      else
+        puts "Could not load checkpoint file, starting fresh collection"
       end
-      
-      puts "Collected #{collected_jobs.length} jobs so far (target: #{target_count})"
-      
-      # Save checkpoint periodically
-      if (batch_number % checkpoint_interval == 0)
-        create_checkpoint(collected_jobs, processed_ids, "id_collection", batch_number)
-      end
-      
-      # Try to load more results
-      more_available = load_more_results(3)
-      break unless more_available
-      
-      batch_number += 1
     end
-    
-    # Final save
-    create_checkpoint(collected_jobs, processed_ids, "id_collection", batch_number)
-    puts "Completed job ID collection. Total jobs collected: #{collected_jobs.length}"
-    
-    collected_jobs
-  end
-  
-  # This method will collect job IDs by repeatedly clicking the "load more" button
-  def collect_all_job_ids(target_count = 10_000, checkpoint_interval = 5)
-    # Initialize data structures
-    collected_jobs = []
-    batch_number = 0
     
     puts "Starting job ID collection process, target: #{target_count}"
     take_screenshot("initial_page_#{Time.now.to_i}.png")
-
+  
+    # Track how many consecutive batches returned no new jobs
+    empty_batch_count = 0
+    max_empty_batches = 3  # Give up after this many consecutive empty batches
+    
     while collected_jobs.length < target_count
       # First, wait for the table to load
       begin
         browser.wait_until(timeout: 30) { browser.tbody.exists? }
       rescue Watir::Wait::TimeoutError
         puts "Table not found after waiting 30 seconds - no more results or page error"
+        take_screenshot("table_timeout_#{Time.now.to_i}.png")
         break
       end
       
@@ -200,12 +171,35 @@ class Interamt < Page
       new_jobs = extract_visible_job_info
       puts "Found #{new_jobs.length} jobs in current view"
       
-      # Add to collection, avoiding duplicates
+      # Add new jobs to collection, avoiding duplicates
       before_count = collected_jobs.length
-      collected_jobs |= new_jobs  # Union operation to avoid duplicates
-      after_count = collected_jobs.length
       
-      puts "Added #{after_count - before_count} new jobs, total now: #{collected_jobs.length} (target: #{target_count})"
+      # Add only unique jobs
+      new_jobs_added = 0
+      new_jobs.each do |job|
+        unless job_id_set.include?(job[:id])
+          collected_jobs << job
+          job_id_set.add(job[:id])
+          new_jobs_added += 1
+        end
+      end
+      
+      puts "Added #{new_jobs_added} new jobs, total now: #{collected_jobs.length} (target: #{target_count})"
+      
+      # Check if we got any new jobs
+      if new_jobs_added == 0
+        empty_batch_count += 1
+        puts "No new jobs in this batch. Empty batch count: #{empty_batch_count}/#{max_empty_batches}"
+        
+        # If we've had too many empty batches in a row, assume we're not getting any more unique results
+        if empty_batch_count >= max_empty_batches
+          puts "Reached #{max_empty_batches} consecutive empty batches, ending collection"
+          break
+        end
+      else
+        # Reset the empty batch counter if we found new jobs
+        empty_batch_count = 0
+      end
       
       # Save checkpoint periodically
       if (batch_number % checkpoint_interval == 0)
@@ -234,7 +228,6 @@ class Interamt < Page
     collected_jobs
   end
 
-  # Dedicated method to click the load more button
   def click_load_more_button
     puts "Looking for 'mehr laden' button..."
     load_more_button = nil
@@ -262,20 +255,21 @@ class Interamt < Page
     sleep 1
     
     # Take a screenshot before clicking
-    take_screenshot("before_clicking_load_more_#{Time.now.to_i}.png")
+    Dir.mkdir('screenshots') unless Dir.exist?('screenshots')
+    take_screenshot("screenshots/before_clicking_load_more_#{Time.now.to_i}.png")
     
     # Click the button
     begin
       load_more_button.click
       puts "Clicked 'mehr laden' button"
       
-      # Wait for new results to load - dynamic wait with visual confirmation
       wait_time = 5
       puts "Waiting #{wait_time} seconds for new results to load..."
       sleep wait_time
       
       # Take a screenshot after clicking
-      take_screenshot("after_clicking_load_more_#{Time.now.to_i}.png")
+      Dir.mkdir('screenshots') unless Dir.exist?('screenshots')
+      take_screenshot("screenshots/after_clicking_load_more_#{Time.now.to_i}.png")
       
       # Wait for the table to update - look for the table to be present again
       browser.wait_until(timeout: 30) { browser.tbody.exists? }
@@ -291,32 +285,66 @@ class Interamt < Page
   def extract_visible_job_info
     jobs = []
     
-    if browser.tbody.exists?
-      rows = browser.tbody.trs
-      puts "Found #{rows.length} rows in tbody"
-
-      rows.each do |row|
-        puts "row.html #{row.html}"
-        stellenangebot_id = row.td(data_field: 'StellenangebotId').span.text.strip
-        puts "stellenangebot_id_td.text: #{stellenangebot_id}"
-        behoerde = row.td(data_field: 'Behoerde').text.strip
-        puts "behoerde: #{behoerde}"
-        stellenbezeichnung = row.td(data_field: 'Stellenbezeichnung').text.strip
-        puts "stellenbezeichnung: #{stellenbezeichnung}"
-
-        jobs << {
-          id: clean_text(stellenangebot_id),
-          behoerde: clean_text(behoerde),
-          stellenbezeichnung: clean_text(stellenbezeichnung),
-          processed: false
-        }
-        puts "--------------------"
-        puts "jobs: #{jobs.inspect}"
+    begin
+      if browser.tbody.exists?
+        rows = browser.tbody.trs
+        puts "Found #{rows.length} rows in tbody"
+        
+        # Debug the structure of the first row to validate our selectors
+        if rows.length > 0
+          first_row = rows[0]
+          puts "First row HTML: #{first_row.html}"
+          puts "First row TD count: #{first_row.tds.length}"
+          first_row.tds.each_with_index do |td, index|
+            puts "TD #{index} data-field: #{td.attribute('data-field')} | text: #{td.text}"
+          end
+        end
+  
+        rows.each_with_index do |row, row_index|
+          begin
+            stellenangebot_id = nil
+            behoerde = nil
+            stellenbezeichnung = nil
+            
+            row.tds.each do |td|
+              data_field = td.attribute('data-field')
+              case data_field
+              when 'StellenangebotId'
+                stellenangebot_id = td.span.text.strip
+              when 'Behoerde'
+                behoerde = td.text.strip
+              when 'Stellenbezeichnung'
+                stellenbezeichnung = td.text.strip
+              end
+            end
+            
+            # Only add if we have at least an ID
+            if stellenangebot_id && !stellenangebot_id.empty?
+              job = {
+                id: clean_text(stellenangebot_id),
+                behoerde: clean_text(behoerde || "Unknown"),
+                stellenbezeichnung: clean_text(stellenbezeichnung || "Unknown"),
+                processed: false
+              }
+              
+              puts "Row #{row_index}: Found job ID: #{job[:id]}"
+              jobs << job
+            else
+              puts "Row #{row_index}: Could not extract job ID, skipping"
+            end
+          rescue => e
+            puts "Error processing row #{row_index}: #{e.message}"
+          end
+        end
+      else
+        puts "No tbody found on page"
       end
+    rescue => e
+      puts "Error in extract_visible_job_info: #{e.message}"
+      take_screenshot("error_extract_job_info_#{Time.now.to_i}.png")
     end
-
-    puts "======================="
-    puts "collected jobs so far: #{jobs.inspect}"
+  
+    puts "Extracted #{jobs.length} jobs from current page"
     jobs
   end
 
@@ -712,7 +740,11 @@ class ScraperCLI
     @options = {
       portal: nil,
       keyword: "",
-      results: 3                  # default number of results
+      results: 3,                    # default number of results
+      mode: "process",               # default mode: "process" or "collect"
+      collect_count: 10_000,         # default number of job IDs to collect
+      checkpoint_interval: 5,        # default checkpoint interval
+      resume_checkpoint: nil         # optional path to resume from checkpoint
     }
   end
 
@@ -725,10 +757,14 @@ class ScraperCLI
           ruby webscraper.rb --portal [bund|interamt] [options]
 
         Examples:
+          # Process job details
           ruby webscraper.rb --portal interamt --keyword "Informatiker" --results 3
           ruby webscraper.rb --portal bund --keyword "Medieninformatiker" --results 5
-          ruby webscraper.rb --portal interamt --results 2
-          ruby webscraper.rb --portal bund
+          
+          # Collect job IDs
+          ruby webscraper.rb --portal interamt --mode collect --collect-count 5000
+          ruby webscraper.rb --portal interamt --mode collect --checkpoint-interval 10
+          ruby webscraper.rb --portal interamt --mode collect --resume-from checkpoint_latest.json
 
         Available Options:
       BANNER
@@ -752,6 +788,31 @@ class ScraperCLI
               "Default: 3") do |n|
         @options[:results] = n
       end
+      
+      # New options for job ID collection
+      opts.on("--mode MODE", ["process", "collect"],
+              "Operation mode: 'process' to process job details or 'collect' to collect job IDs",
+              "Default: 'process'") do |mode|
+        @options[:mode] = mode
+      end
+      
+      opts.on("--collect-count N", Integer,
+              "Number of job IDs to collect (for collect mode)",
+              "Default: 10000") do |n|
+        @options[:collect_count] = n
+      end
+      
+      opts.on("--checkpoint-interval N", Integer,
+              "Interval for saving checkpoints (for collect mode)",
+              "Default: 5") do |n|
+        @options[:checkpoint_interval] = n
+      end
+      
+      opts.on("--resume-from FILE",
+              "Resume from a checkpoint file",
+              "Provide path to the checkpoint file") do |file|
+        @options[:resume_checkpoint] = file
+      end
 
       opts.on_tail("--help", "Show this help message") do
         puts opts
@@ -773,6 +834,11 @@ class ScraperCLI
       puts "For help, use: ruby webscraper.rb --help"
       exit 1
     end
+    
+    if @options[:mode] == "collect" && @options[:portal] != "interamt"
+      puts "Error: Collection mode is only supported for the interamt portal"
+      exit 1
+    end
   end
 
   def run
@@ -790,10 +856,21 @@ class ScraperCLI
         service_bund_page.click_first_n_results(@options[:results])
       when "interamt"
         interamt_page = site.interamt_page
-        # interamt_page.load_more_results(30)
-        # interamt_page.collect_job_ids(13)
-        interamt_page.collect_all_job_ids(40)
-        # interamt_page.click_first_n_results(@options[:results], @options[:keyword])
+        
+        if @options[:mode] == "collect"
+          puts "Starting job ID collection mode"
+          puts "Target count: #{@options[:collect_count]}, Checkpoint interval: #{@options[:checkpoint_interval]}"
+          
+          if @options[:resume_checkpoint]
+            puts "Resuming from checkpoint: #{@options[:resume_checkpoint]}"
+            interamt_page.collect_all_job_ids(@options[:collect_count], @options[:checkpoint_interval], @options[:resume_checkpoint])
+          else
+            interamt_page.collect_all_job_ids(@options[:collect_count], @options[:checkpoint_interval])
+          end
+        else
+          puts "Starting job processing mode"
+          interamt_page.click_first_n_results(@options[:results], @options[:keyword])
+        end
       end
     ensure
       site.close

@@ -58,6 +58,36 @@ Transmit the job description (from text file) to an LLM with custom prompt and s
 podman run --network=host -v $(pwd):/app webscraper ruby api_test.rb
 ```
 
+## Phase 1: Collect Job IDs
+
+Collect job IDs with a specified target count:
+
+```bash
+podman run --network=host -v $(pwd):/app webscraper ruby webscraper.rb --portal interamt --mode collect --collect-count 5000
+```
+
+Set a custom checkpoint interval:
+
+```bash
+ruby webscraper.rb --portal interamt --mode collect --checkpoint-interval 10
+```
+
+Resume from a previous checkpoint:
+
+```bash
+ruby webscraper.rb --portal interamt --mode collect --resume-from checkpoint_latest.json
+```
+
+Combine these options as needed:
+
+```bash
+ruby webscraper.rb --portal interamt --mode collect --collect-count 8000 --checkpoint-interval 20 --resume-from checkpoint_id_collection_batch5_20250228_120000.json
+```
+
+## Phase 2: Extract Job Details
+
+in branch `feature/phase-2`
+
 ## Podman/Docker Cheatsheet
 
 Build the image: `podman build -t webscraper .`
