@@ -126,27 +126,39 @@ class Interamt < Page
     super(browser, URL)
   end
 
-  def collect_all_job_ids(target_count = 10_000, checkpoint_interval = 5, resume_from = nil)
+  # Main method to run the whole process
+  def collect_and_process_jobs(job_count = 200)
+    puts "Starting job collection and processing for #{job_count} jobs"
+    
+    # Step 1: Collect job IDs
+    job_data = collect_all_job_ids(job_count)
+    puts "Collected #{job_data.length} job IDs"
+    
+    # Step 2: Process each job to extract descriptions
+    process_job_descriptions(job_data)
+    
+    puts "Job collection and processing complete!"
+    return job_data
+  end
+
+  def collect_all_job_ids(target_count = 200, checkpoint_interval = 5, resume_checkpoint = nil)
     # Initialize data structures
     collected_jobs = []
     batch_number = 0
     job_id_set = Set.new  # Use a Set for O(1) lookups when checking if ID exists
 
-    # If resuming from a checkpoint
-    if resume_from
-      checkpoint_data = load_checkpoint(resume_from)
-      if checkpoint_data
-        collected_jobs = checkpoint_data['jobs']
-        batch_number = checkpoint_data['batch_number'] + 1  # Start from next batch
-
-        # Initialize the set with existing IDs for quick lookups
-        collected_jobs.each do |job|
-          job_id_set.add(job['id'])
+    # Resume from checkpoint if provided
+    if resume_checkpoint && File.exist?(resume_checkpoint)
+      begin
+        checkpoint_data = JSON.parse(File.read(resume_checkpoint))
+        if checkpoint_data['jobs'] && !checkpoint_data['jobs'].empty?
+          collected_jobs = checkpoint_data['jobs']
+          collected_jobs.each { |job| job_id_set.add(job['id']) }
+          batch_number = checkpoint_data['batch_number'] || 0
+          puts "Resumed from checkpoint. Already collected #{collected_jobs.length} jobs."
         end
-
-        puts "Resuming job collection from batch #{batch_number} with #{collected_jobs.length} jobs already collected"
-      else
-        puts "Could not load checkpoint file, starting fresh collection"
+      rescue => e
+        puts "Error loading checkpoint: #{e.message}. Starting fresh."
       end
     end
 
@@ -171,9 +183,6 @@ class Interamt < Page
       new_jobs = extract_visible_job_info
       puts "Found #{new_jobs.length} jobs in current view"
 
-      # Add new jobs to collection, avoiding duplicates
-      before_count = collected_jobs.length
-
       # Add only unique jobs
       new_jobs_added = 0
       new_jobs.each do |job|
@@ -181,6 +190,12 @@ class Interamt < Page
           collected_jobs << job
           job_id_set.add(job[:id])
           new_jobs_added += 1
+          
+          # Break if we've reached our target
+          if collected_jobs.length >= target_count
+            puts "Reached target count of #{target_count} jobs"
+            break
+          end
         end
       end
 
@@ -208,7 +223,6 @@ class Interamt < Page
 
       # Stop if we've reached our target
       if collected_jobs.length >= target_count
-        puts "Reached target count of #{target_count} jobs"
         break
       end
 
@@ -227,6 +241,430 @@ class Interamt < Page
 
     collected_jobs
   end
+
+  # Updated method to process job descriptions with better error handling and resumption
+  def process_job_descriptions(job_data, batch_size = 10, resume_from_index = 0)
+    puts "Starting to process #{job_data.length} job descriptions"
+    
+    # Count processed and failed jobs
+    processed_count = 0
+    failed_count = 0
+    
+    # If resuming, count jobs already processed
+    if resume_from_index > 0
+      job_data.each_with_index do |job, idx|
+        if idx < resume_from_index
+          processed_count += 1 if job[:description_saved]
+          failed_count += 1 if job.key?(:description_saved) && !job[:description_saved]
+        end
+      end
+      puts "Resuming from index #{resume_from_index}. Already processed: #{processed_count} successful, #{failed_count} failed"
+    end
+    
+    # Create directories for saving job details
+    Dir.mkdir('job_details') unless Dir.exist?('job_details')
+    
+    # Process each job
+    job_data[resume_from_index..-1].each_with_index do |job, rel_index|
+      actual_index = resume_from_index + rel_index
+      puts "Processing job #{actual_index + 1}/#{job_data.length}: ID #{job[:id]}, Title: #{job[:stellenbezeichnung]}"
+      
+      # Skip already processed jobs
+      if job[:description_saved] == true
+        puts "✓ Job #{job[:id]} already processed successfully, skipping"
+        next
+      end
+      
+      begin
+        # Navigate to the job detail page
+        job_url = "https://interamt.de/koop/app/stellendetail?0&ID=#{job[:id]}"
+        browser.goto job_url
+        
+        # Wait for page to load with more robust waiting strategy
+        begin
+          browser.wait_until(timeout: 30) { browser.ready_state == 'complete' }
+          
+          # Additional wait for content to load
+          begin
+            browser.wait_until(timeout: 15) do
+              browser.div(class: /ia-e-richtext|ia-tab-primary/).exists? || 
+              browser.div(role: 'main').exists?
+            end
+          rescue Watir::Wait::TimeoutError
+            puts "⚠️ Content container not found, but proceeding with extraction anyway"
+          end
+        rescue Watir::Wait::TimeoutError
+          puts "⚠️ Page load timeout, but proceeding with extraction anyway"
+        end
+        
+        sleep 2  # Give JavaScript a moment to fully render
+        
+        # Try different selectors for job description content
+        description_content = extract_job_description_content
+        
+        if description_content && !description_content.empty?
+          # Save the content
+          filename = save_job_description(job[:id], description_content)
+          job[:description_saved] = true
+          job[:description_file] = filename
+          processed_count += 1
+          puts "✓ Successfully extracted description for job #{job[:id]}"
+        else
+          puts "✗ Failed to extract description for job #{job[:id]}"
+          job[:description_saved] = false
+          job[:failure_reason] = "No content found"
+          failed_count += 1
+          take_screenshot("failed_description_#{job[:id]}_#{Time.now.to_i}.png")
+        end
+      rescue => e
+        puts "✗ Error processing job #{job[:id]}: #{e.message}"
+        job[:description_saved] = false
+        job[:failure_reason] = e.message
+        failed_count += 1
+        take_screenshot("error_job_#{job[:id]}_#{Time.now.to_i}.png")
+      end
+      
+      # Save checkpoint periodically
+      if (actual_index + 1) % 10 == 0 || (actual_index + 1) % batch_size == 0
+        puts "Progress: #{actual_index + 1}/#{job_data.length} jobs processed (#{processed_count} successful, #{failed_count} failed)"
+        save_progress_checkpoint(job_data, processed_count, failed_count, actual_index)
+      end
+      
+      # If we've processed a batch, take a short break to avoid overloading the server
+      if (rel_index + 1) % batch_size == 0 && actual_index < job_data.length - 1
+        puts "Batch complete. Taking a short break before continuing..."
+        sleep 5
+      end
+    end
+    
+    # Final report
+    puts "Job description processing complete!"
+    puts "Total jobs: #{job_data.length}"
+    puts "Successfully processed: #{processed_count}"
+    puts "Failed to process: #{failed_count}"
+    
+    # Final checkpoint
+    save_progress_checkpoint(job_data, processed_count, failed_count, job_data.length - 1, "complete")
+    
+    return job_data
+  end
+  
+  # Load checkpoint for resuming job processing
+  def load_checkpoint(checkpoint_path)
+    if File.exist?(checkpoint_path)
+      begin
+        checkpoint_data = JSON.parse(File.read(checkpoint_path))
+        puts "Loading checkpoint data from #{checkpoint_path}"
+        return checkpoint_data
+      rescue => e
+        puts "Error loading checkpoint: #{e.message}"
+        return nil
+      end
+    else
+      puts "Checkpoint file not found at #{checkpoint_path}"
+      return nil
+    end
+  end
+  
+  def process_job_descriptions(job_data, batch_size = 10, resume_from_index = 0)
+    puts "Starting to process #{job_data.length} job descriptions"
+    
+    # Count processed and failed jobs
+    processed_count = 0
+    failed_count = 0
+    
+    # If resuming, count jobs already processed
+    if resume_from_index > 0
+      job_data.each_with_index do |job, idx|
+        if idx < resume_from_index
+          processed_count += 1 if job[:description_saved]
+          failed_count += 1 if job.key?(:description_saved) && !job[:description_saved]
+        end
+      end
+      puts "Resuming from index #{resume_from_index}. Already processed: #{processed_count} successful, #{failed_count} failed"
+    end
+    
+    # Create directories for saving job details
+    Dir.mkdir('job_details') unless Dir.exist?('job_details')
+    
+    # First, navigate to the main results page
+    browser.goto URL
+    
+    # Wait for the page to load
+    begin
+      browser.wait_until(timeout: 30) { browser.ready_state == 'complete' }
+    rescue Watir::Wait::TimeoutError
+      puts "⚠️ Initial page load timeout"
+    end
+    
+    # Process each job in batches
+    job_data[resume_from_index..-1].each_slice(batch_size) do |job_batch|
+      puts "Processing batch of #{job_batch.size} jobs"
+      
+      job_batch.each_with_index do |job, batch_index|
+        actual_index = resume_from_index + batch_index
+        puts "Processing job #{actual_index + 1}/#{job_data.length}: ID #{job[:id]}, Title: #{job[:stellenbezeichnung]}"
+        
+        # Skip already processed jobs
+        if job[:description_saved] == true
+          puts "✓ Job #{job[:id]} already processed successfully, skipping"
+          next
+        end
+        
+        begin
+          # First, find the job in the results table by ID
+          job_found = false
+          max_attempts = 3
+          attempts = 0
+          
+          while attempts < max_attempts && !job_found
+            attempts += 1
+            
+            # Try to find the job row by ID
+            job_row = nil
+            begin
+              browser.wait_until(timeout: 30) { browser.tbody.exists? }
+              
+              browser.tbody.trs.each do |row|
+                row_id = nil
+                row.tds.each do |td|
+                  if td.attribute('data-field') == 'StellenangebotId'
+                    row_id = td.span.text.strip
+                    break
+                  end
+                end
+                
+                if row_id && row_id == job[:id]
+                  job_row = row
+                  job_found = true
+                  break
+                end
+              end
+            rescue => e
+              puts "Error finding job row: #{e.message}"
+            end
+            
+            if job_found
+              puts "Found job #{job[:id]} in the results table, clicking on it"
+              
+              # Click on the row to open the job details
+              begin
+                job_row.click
+                
+                # Wait for the detail page to load
+                browser.wait_until(timeout: 30) { browser.ready_state == 'complete' }
+                
+                # Additional wait for content to load
+                begin
+                  browser.wait_until(timeout: 15) do
+                    browser.div(class: /ia-e-richtext|ia-tab-primary/).exists? || 
+                    browser.div(role: 'main').exists?
+                  end
+                rescue Watir::Wait::TimeoutError
+                  puts "⚠️ Content container not found, but proceeding with extraction anyway"
+                end
+                
+                sleep 2  # Give JavaScript a moment to fully render
+                
+                # Extract job description content
+                description_content = extract_job_description_content
+                
+                if description_content && !description_content.empty?
+                  # Save the content
+                  filename = save_job_description(job[:id], description_content)
+                  job[:description_saved] = true
+                  job[:description_file] = filename
+                  processed_count += 1
+                  puts "✓ Successfully extracted description for job #{job[:id]}"
+                else
+                  puts "✗ Failed to extract description for job #{job[:id]}"
+                  job[:description_saved] = false
+                  job[:failure_reason] = "No content found"
+                  failed_count += 1
+                  take_screenshot("failed_description_#{job[:id]}_#{Time.now.to_i}.png")
+                end
+                
+                # Go back to the results page
+                browser.goto URL
+                
+                # Wait for the results page to load again
+                begin
+                  browser.wait_until(timeout: 30) { browser.ready_state == 'complete' }
+                rescue Watir::Wait::TimeoutError
+                  puts "⚠️ Return to results page timeout"
+                end
+                
+                # Wait for the table to load again
+                begin
+                  browser.wait_until(timeout: 30) { browser.tbody.exists? }
+                rescue Watir::Wait::TimeoutError
+                  puts "⚠️ Table not found after returning to results page"
+                  # If we can't find the table, refresh the page
+                  browser.refresh
+                  sleep 3
+                end
+                
+                # If we need to load more results to find our next job, do so
+                load_more_results_for_batch(job_batch, batch_index)
+                
+              rescue => e
+                puts "Error processing job after clicking: #{e.message}"
+                job[:description_saved] = false
+                job[:failure_reason] = e.message
+                failed_count += 1
+                take_screenshot("error_processing_#{job[:id]}_#{Time.now.to_i}.png")
+                
+                # Try to get back to the results page
+                browser.goto URL
+                sleep 3
+              end
+            else
+              puts "⚠️ Job #{job[:id]} not found in current results, trying to load more results"
+              
+              # If we couldn't find the job, try to load more results
+              if !click_load_more_button
+                puts "No more results available - job not found"
+                
+                # If we've tried multiple times and still can't find it, use the direct URL approach as fallback
+                if attempts == max_attempts
+                  puts "Falling back to direct URL approach for job #{job[:id]}"
+                  process_job_by_direct_url(job)
+                  if job[:description_saved]
+                    processed_count += 1
+                  else
+                    failed_count += 1
+                  end
+                end
+              end
+            end
+          end
+          
+          # If we still couldn't find the job after multiple attempts, mark it as failed
+          if !job_found && !job[:description_saved]
+            puts "✗ Could not find job #{job[:id]} in results after #{max_attempts} attempts"
+            job[:description_saved] = false
+            job[:failure_reason] = "Job not found in results"
+            failed_count += 1
+          end
+          
+        rescue => e
+          puts "✗ Error processing job #{job[:id]}: #{e.message}"
+          job[:description_saved] = false
+          job[:failure_reason] = e.message
+          failed_count += 1
+          take_screenshot("error_job_#{job[:id]}_#{Time.now.to_i}.png")
+          
+          # Try to get back to the results page
+          browser.goto URL
+          sleep 3
+        end
+        
+        # Save checkpoint periodically
+        if (actual_index + 1) % 10 == 0
+          puts "Progress: #{actual_index + 1}/#{job_data.length} jobs processed (#{processed_count} successful, #{failed_count} failed)"
+          save_progress_checkpoint(job_data, processed_count, failed_count, actual_index)
+        end
+      end
+      
+      # After processing a batch, save progress
+      puts "Batch complete. Saving progress..."
+      save_progress_checkpoint(job_data, processed_count, failed_count, resume_from_index + batch_size - 1)
+      
+      # Update resume_from_index for the next batch
+      resume_from_index += batch_size
+    end
+    
+    # Final report
+    puts "Job description processing complete!"
+    puts "Total jobs: #{job_data.length}"
+    puts "Successfully processed: #{processed_count}"
+    puts "Failed to process: #{failed_count}"
+    
+    # Final checkpoint
+    save_progress_checkpoint(job_data, processed_count, failed_count, job_data.length - 1, "complete")
+    
+    return job_data
+  end
+  
+  # Improved method to extract job description content
+  def extract_job_description_content
+    content = nil
+    
+    # Try multiple potential selectors for job description content in order of specificity
+    selectors_to_try = [
+      { type: :div, selector: { class: 'ia-e-richtext' }, name: "richtext class" },
+      { type: :div, selector: { role: 'main' }, name: "main role" }
+    ]
+    
+    selectors_to_try.each do |selector_info|
+      begin
+        element = browser.send(selector_info[:type], selector_info[:selector])
+        if element.exists?
+          content = element.html
+          puts "Found description using #{selector_info[:name]} selector"
+          break
+        end
+      rescue => e
+        puts "Error trying #{selector_info[:name]} selector: #{e.message}"
+      end
+    end
+    
+    # If all else fails, get the body content
+    if content.nil? || content.strip.empty?
+      puts "No specific content container found, capturing full body content"
+      begin
+        content = browser.body.html
+      rescue => e
+        puts "Error capturing body content: #{e.message}"
+        content = nil
+      end
+    end
+    
+    return content
+  end
+  
+  # Method to save job description to file
+  def save_job_description(job_id, content)
+    timestamp = Time.now.strftime('%Y%m%d_%H%M%S')
+    filename = File.join('job_details', "job_#{job_id}_#{timestamp}.html")
+    
+    # Save HTML content
+    File.write(filename, content)
+    puts "Saved job description to #{filename}"
+    
+    # Take screenshot for verification
+    screenshot_filename = File.join('job_details', "job_#{job_id}_screenshot_#{timestamp}.png")
+    take_screenshot(screenshot_filename)
+    
+    return filename
+  end
+  
+  # Method to save progress checkpoint with current index
+  def save_progress_checkpoint(job_data, processed_count, failed_count, current_index, status = "in_progress")
+    Dir.mkdir('job_checkpoints') unless Dir.exist?('job_checkpoints')
+    timestamp = Time.now.strftime('%Y%m%d_%H%M%S')
+    
+    checkpoint_data = {
+      timestamp: timestamp,
+      status: status,
+      total_jobs: job_data.length,
+      processed_count: processed_count,
+      failed_count: failed_count,
+      current_index: current_index,
+      jobs: job_data
+    }
+    
+    filename = File.join('job_checkpoints', "job_progress_#{timestamp}.json")
+    File.write(filename, JSON.generate(checkpoint_data))
+    
+    # Also save latest checkpoint
+    latest_filename = File.join('job_checkpoints', "latest_checkpoint.json")
+    File.write(latest_filename, JSON.generate(checkpoint_data))
+    
+    puts "Saved progress checkpoint to #{filename}"
+  end
+
+  # Existing methods below with minor improvements
 
   def click_load_more_button
     puts "Looking for 'mehr laden' button..."
@@ -254,10 +692,6 @@ class Interamt < Page
     browser.execute_script("arguments[0].scrollIntoView(true);", load_more_button)
     sleep 1
 
-    # Take a screenshot before clicking
-    Dir.mkdir('screenshots') unless Dir.exist?('screenshots')
-    take_screenshot("screenshots/before_clicking_load_more_#{Time.now.to_i}.png")
-
     # Click the button
     begin
       load_more_button.click
@@ -266,10 +700,6 @@ class Interamt < Page
       wait_time = 5
       puts "Waiting #{wait_time} seconds for new results to load..."
       sleep wait_time
-
-      # Take a screenshot after clicking
-      Dir.mkdir('screenshots') unless Dir.exist?('screenshots')
-      take_screenshot("screenshots/after_clicking_load_more_#{Time.now.to_i}.png")
 
       # Wait for the table to update - look for the table to be present again
       browser.wait_until(timeout: 30) { browser.tbody.exists? }
@@ -289,16 +719,6 @@ class Interamt < Page
       if browser.tbody.exists?
         rows = browser.tbody.trs
         puts "Found #{rows.length} rows in tbody"
-
-        # Debug the structure of the first row to validate our selectors
-        if rows.length > 0
-          first_row = rows[0]
-          puts "First row HTML: #{first_row.html}"
-          puts "First row TD count: #{first_row.tds.length}"
-          first_row.tds.each_with_index do |td, index|
-            puts "TD #{index} data-field: #{td.attribute('data-field')} | text: #{td.text}"
-          end
-        end
 
         rows.each_with_index do |row, row_index|
           begin
@@ -327,7 +747,6 @@ class Interamt < Page
                 processed: false
               }
 
-              puts "Row #{row_index}: Found job ID: #{job[:id]}"
               jobs << job
             else
               puts "Row #{row_index}: Could not extract job ID, skipping"
@@ -346,22 +765,6 @@ class Interamt < Page
 
     puts "Extracted #{jobs.length} jobs from current page"
     jobs
-  end
-
-  def save_checkpoint(collected_jobs)
-    Dir.mkdir('job_id_checkpoints') unless Dir.exist?('job_id_checkpoints')
-    timestamp = Time.now.strftime('%Y%m%d_%H%M%S')
-
-    checkpoint_data = {
-      timestamp: timestamp,
-      total_jobs_collected: collected_jobs.length,
-      phase: "id_collection",
-      jobs: collected_jobs
-    }
-
-    filename = File.join('job_id_checkpoints', "job_ids_#{timestamp}.json")
-    File.write(filename, JSON.generate(checkpoint_data))
-    puts "Saved checkpoint with #{collected_jobs.length} jobs to #{filename}"
   end
 
   def create_checkpoint(collected_jobs, processed_ids = [], current_phase = "id_collection", batch_number = 0)
@@ -401,340 +804,6 @@ class Interamt < Page
     return filename
   end
 
-  def load_checkpoint(filename = nil)
-    # If no filename is provided, try to load the latest checkpoint
-    if filename.nil?
-      latest_file = File.join('job_scraper_checkpoints', "checkpoint_latest.json")
-      if File.exist?(latest_file)
-        filename = latest_file
-      else
-        puts "No checkpoint file specified and no latest checkpoint found."
-        return nil
-      end
-    end
-
-    begin
-      checkpoint_data = JSON.parse(File.read(filename))
-      puts "Loaded checkpoint from #{filename}"
-      puts "Phase: #{checkpoint_data['current_phase']}, Batch: #{checkpoint_data['batch_number']}"
-      puts "Statistics: #{checkpoint_data['statistics']['total_ids_collected']} jobs collected, #{checkpoint_data['statistics']['details_fetched']} details fetched"
-
-      return checkpoint_data
-    rescue => e
-      puts "Error loading checkpoint: #{e.message}"
-      return nil
-    end
-  end
-
-  # Update load_more_results to return whether more results are available
-  def load_more_results(times = 1)
-    puts "Attempting to load more results..."
-    times_clicked = 0
-
-    times.times do |i|
-      # Look for the "mehr laden" button using multiple selectors
-      load_more_button = nil
-
-      # Try finding by ID first
-      if browser.button(id: 'id1').exists?
-        load_more_button = browser.button(id: 'id1')
-      # Try finding by class
-      elsif browser.button(class: /ia-m-searchresultsbtn-load/).exists?
-        load_more_button = browser.button(class: /ia-m-searchresultsbtn-load/)
-      # Try finding by the span label
-      elsif browser.button { |btn| btn.span(class: 'ia-e-buttonlabel', text: 'mehr laden').exists? }.exists?
-        load_more_button = browser.button { |btn| btn.span(class: 'ia-e-buttonlabel', text: 'mehr laden').exists? }
-      end
-
-      # If we can't find the button or it's not visible, we've reached the end
-      if load_more_button.nil? || !load_more_button.exists? || !load_more_button.visible?
-        puts "No more 'mehr laden' button found after #{times_clicked} clicks."
-        return false
-      end
-
-      # Click the button
-      load_more_button.click
-      times_clicked += 1
-      puts "Clicked 'mehr laden' button (#{i+1}/#{times})"
-      sleep 2
-
-      # Wait for new results to load
-      wait_time = 2 + rand(3)
-      puts "Waiting #{wait_time} seconds for new results to load..."
-      sleep wait_time
-    end
-
-    puts "Finished loading more results. Clicked #{times_clicked} times."
-    return true  # More results might be available
-  end
-
-  def click_first_n_results(n, keyword = "")
-    if n < 1
-      raise ArgumentError, "n must be greater than or equal to 1"
-    end
-
-    begin
-      puts "Waiting for page to load completely..."
-      browser.wait_until(timeout: 30) { browser.ready_state == 'complete' }
-
-      search_field = nil
-
-      if browser.text_field(id: 'id43').exists?
-        puts "Found search field by ID: id43"
-        search_field = browser.text_field(id: 'id43')
-      elsif browser.text_field(name: /suche|search/i).exists?
-        puts "Found search field by name"
-        search_field = browser.text_field(name: /suche|search/i)
-      elsif browser.text_field(placeholder: /suche|search/i).exists?
-        puts "Found search field by placeholder"
-        search_field = browser.text_field(placeholder: /suche|search/i)
-      else
-        puts "Trying to find any available text fields..."
-        all_text_fields = browser.text_fields
-        puts "Found #{all_text_fields.length} text fields"
-
-        if all_text_fields.length > 0
-          search_field = all_text_fields.first
-          puts "Using first available text field"
-        end
-      end
-
-      if search_field && search_field.exists?
-        puts "Setting keyword: #{keyword}"
-        search_field.set keyword
-        search_field.send_keys :enter
-
-        puts "Waiting for search results..."
-        browser.wait_until(timeout: 30) { browser.tbody.exists? || browser.div(text: /keine ergebnisse|no results/i).exists? }
-
-        take_screenshot("interamt_open_positions.png")
-
-        if browser.tbody.exists?
-          results = browser.tbody
-          puts "Result html: #{results.html}"
-
-          rows = results.trs
-          puts "Found #{rows.length} results"
-
-          num_to_process = [n, rows.length].min
-          puts "Will process #{num_to_process} results"
-
-          (0...num_to_process).each do |index|
-            puts "Clicking row #{index + 1}"
-
-            current_row = browser.tbody.tr(index: index)
-            if current_row.exists?
-              current_row.click
-              job_listing_description(index + 1)
-              browser.back
-              browser.wait_until(timeout: 30) { browser.tbody.present? }
-            else
-              puts "Row #{index + 1} no longer exists, skipping"
-            end
-          end
-        else
-          puts "No results found"
-          take_screenshot("interamt_no_results.png")
-        end
-      else
-        puts "Could not find search field"
-        take_screenshot("interamt_no_search_field.png")
-        raise "Could not find search field on the page. Check screenshot: interamt_no_search_field.png"
-      end
-    rescue Watir::Wait::TimeoutError => e
-      puts "Timeout error: #{e.message}"
-      take_screenshot("interamt_timeout_error.png")
-      raise "Operation timed out. Check screenshot: interamt_timeout_error.png"
-    rescue => e
-      puts "Error: #{e.message}"
-      take_screenshot("interamt_error.png")
-      raise "An error occurred: #{e.message}. Check screenshot: interamt_error.png"
-    end
-  end
-
-  def process_collected_job_ids(job_ids_to_process, batch_size = 5)
-    puts "Starting to process #{job_ids_to_process.length} collected job IDs"
-    processed_ids = []
-    failed_ids = []
-
-    # Track original page state to handle pagination
-    current_batch = 0
-
-    # Continue until all job IDs are processed
-    while processed_ids.length + failed_ids.length < job_ids_to_process.length
-      puts "Processing batch #{current_batch + 1}, progress: #{processed_ids.length + failed_ids.length}/#{job_ids_to_process.length}"
-
-      # Wait for the results table to load
-      begin
-        browser.wait_until(timeout: 30) { browser.tbody.exists? }
-      rescue Watir::Wait::TimeoutError
-        puts "Table not found after waiting 30 seconds - page error"
-        take_screenshot("table_timeout_phase2_#{Time.now.to_i}.png")
-        break
-      end
-
-      # Get all visible job listings on current page
-      visible_jobs = extract_visible_job_info
-      puts "Found #{visible_jobs.length} visible jobs on current page"
-
-      # Check each visible job against our target list
-      processed_in_this_batch = 0
-      visible_jobs.each do |visible_job|
-        job_id = visible_job[:id]
-
-        # Check if this job ID is in our target list and hasn't been processed yet
-        target_job = job_ids_to_process.find { |j| j[:id] == job_id && !j[:processed] }
-
-        if target_job
-          puts "Found target job ID: #{job_id} - processing details"
-
-          # Find the row containing this job ID and click it
-          begin
-            # Find the row by job ID
-            job_row = nil
-            browser.tbody.trs.each do |row|
-              if row.tds.any? { |td| td.text.strip == job_id }
-                job_row = row
-                break
-              end
-            end
-
-            if job_row
-              puts "Clicking on job row for ID: #{job_id}"
-              job_row.click
-
-              # Wait for job detail page to load
-              browser.wait_until(timeout: 30) {
-                browser.div(class: 'ia-e-richtext ia-h-space--top-l').exists? ||
-                browser.div(id: 'ia-tab-primary').exists?
-              }
-
-              # Extract the rich text content
-              rich_text_content = extract_rich_text_content
-              if rich_text_content
-                # Save the rich text content to a file
-                save_job_details(job_id, rich_text_content)
-                puts "Successfully extracted and saved details for job ID: #{job_id}"
-                processed_ids << job_id
-                target_job[:processed] = true
-                processed_in_this_batch += 1
-              else
-                puts "Failed to extract rich text content for job ID: #{job_id}"
-                failed_ids << job_id
-              end
-
-              # Navigate back to the listing page
-              browser.back
-
-              # Wait for the listing page to reload
-              browser.wait_until(timeout: 30) { browser.tbody.exists? }
-              sleep 2 # Give the page a moment to stabilize
-            else
-              puts "Could not find row for job ID: #{job_id}"
-              failed_ids << job_id
-            end
-          rescue => e
-            puts "Error processing job ID #{job_id}: #{e.message}"
-            take_screenshot("error_processing_job_#{job_id}_#{Time.now.to_i}.png")
-            failed_ids << job_id
-
-            # Try to navigate back to the listing page if we're stuck on a detail page
-            if !browser.tbody.exists?
-              browser.back
-              browser.wait_until(timeout: 30) { browser.tbody.exists? }
-              sleep 2
-            end
-          end
-        end
-
-        # Check if we've processed enough in this batch
-        if processed_in_this_batch >= batch_size
-          puts "Reached batch limit of #{batch_size} jobs, will load more results"
-          break
-        end
-      end
-
-      # Save checkpoint after each batch
-      create_checkpoint(job_ids_to_process, processed_ids, "details_extraction", current_batch)
-
-      # If we've processed all visible jobs that match our target list,
-      # or haven't processed any in this batch, load more results
-      if processed_in_this_batch == 0 || processed_in_this_batch < batch_size
-        puts "Loading more results to find remaining target jobs"
-        if !click_load_more_button
-          puts "No more results available - reached end of job listings"
-          break
-        end
-      end
-
-      current_batch += 1
-    end
-
-    # Final checkpoint
-    create_checkpoint(job_ids_to_process, processed_ids, "details_extraction_complete", current_batch)
-
-    puts "Job processing complete!"
-    puts "Successfully processed: #{processed_ids.length} jobs"
-    puts "Failed to process: #{failed_ids.length} jobs"
-
-    return {
-      processed: processed_ids,
-      failed: failed_ids
-    }
-  end
-
-  def save_job_details(job_id, rich_text_content)
-    Dir.mkdir('job_details') unless Dir.exist?('job_details')
-    timestamp = Time.now.strftime('%Y%m%d_%H%M%S')
-
-    # Save the rich text content
-    filename = File.join('job_details', "job_#{job_id}_#{timestamp}.html")
-    File.write(filename, rich_text_content)
-    puts "Saved job details to #{filename}"
-  end
-
-  def extract_rich_text_content
-    rich_text_div = browser.div(class: 'ia-e-richtext ia-h-space--top-l')
-    if rich_text_div.exists?
-      puts "Found rich text content div"
-      content_html = rich_text_div.html
-      return content_html
-    else
-      puts "Rich text content div not found"
-      return nil
-    end
-  rescue => e
-    puts "Error extracting rich text content: #{e.message}"
-    take_screenshot("error_extracting_rich_text.png")
-    return nil
-  end
-
-  def job_listing_description(row_number)
-    Dir.mkdir('scraped_data_interamt') unless Dir.exist?('scraped_data_interamt')
-    timestamp = Time.now.strftime('%Y%m%d_%H%M%S')
-
-    html_filename = File.join('scraped_data_interamt', "job_#{row_number}_#{timestamp}.html")
-    rich_text_filename = File.join('scraped_data_interamt', "job_#{row_number}_richtext_#{timestamp}.html")
-    screenshot_filename = File.join('scraped_data_interamt', "job_#{row_number}_#{timestamp}.png")
-
-    puts "Taking screenshot: #{screenshot_filename}"
-    take_screenshot(screenshot_filename)
-
-    # Extract and save the full content as before
-    content = browser.div(id: 'ia-tab-primary').text
-    content_html = browser.div(id: 'ia-tab-primary').html
-    File.write(html_filename, content_html)
-
-    # Extract and save the rich text content specifically
-    rich_text_content = extract_rich_text_content
-    if rich_text_content
-      File.write(rich_text_filename, rich_text_content)
-      puts "Saved rich text content to #{rich_text_filename}"
-    else
-      puts "No rich text content found for row #{row_number}"
-    end
-  end
-
   def clean_text(text)
     return nil if text.nil?
     text.strip.gsub(/\s+/, ' ')
@@ -749,156 +818,6 @@ class Interamt < Page
   end
 end
 
-class ServiceBund < Page
-  URL = "https://www.service.bund.de/Content/DE/Stellen/Suche/Formular.html".freeze
-
-  def initialize(browser)
-    super(browser, URL)
-  end
-
-  def take_screenshot(filename, y=2600)
-    browser.window.resize_to(1200, y)
-    browser.screenshot.save filename
-  rescue => e
-    puts "Failed to take screenshot #{filename}: #{e.message}"
-  end
-
-  def click_first_n_results(n)
-    begin
-      results_list = browser.ul(class: 'result-list')
-      results_list.wait_until(&:present?)
-      take_screenshot("bund_open_positions.png")
-
-      results = results_list.lis
-      available_results = results.length
-      puts "Found #{available_results} results available"
-
-      n = [n, available_results].min
-      puts "Will process first #{n} results"
-
-      n.times do |i|
-        puts "\nProcessing result #{i + 1} of #{n}"
-
-        current_link = browser.ul(class: 'result-list').lis[i].a
-        current_link.wait_until(&:present?)
-
-        puts "Clicking result #{i + 1}"
-        current_link.click
-
-        browser.div(class: 'text').wait_until(&:present?)
-
-        result = parse_second_section_content(i + 1)
-        puts "Job Listing #{i + 1}: #{result}"
-        puts "--------------------"
-
-        puts "Navigating back to results page"
-        browser.back
-
-        results_list.wait_until(&:present?)
-      end
-    rescue Watir::Wait::TimeoutError => e
-      puts "Timeout while processing results: #{e.message}"
-      take_screenshot("results_timeout_error.png")
-      raise "Results processing timed out. Check screenshot: results_timeout_error.png"
-    rescue => e
-      puts "Error while processing results: #{e.message}"
-      take_screenshot("results_error.png")
-      raise "Results processing failed. Check screenshot: results_error.png"
-    end
-  end
-
-
-  def find_by_keyword(keyword="")
-      puts "Searching for keyword: #{keyword}"
-      begin
-        input_field = browser.div(class: 'form-item item-l').input
-        input_field.wait_until(&:present?)
-        input_field.set keyword
-        input_field.send_keys :enter
-
-        Watir::Wait.until(timeout: 10) do
-          browser.ul(class: 'result-list').present? ||
-          browser.div(class: 'no-results').present? ||
-          browser.section(class: 'result').present?
-        end
-
-        if browser.section(class: 'result').present? &&
-           browser.section(class: 'result').text.include?('Keine Treffer')
-          puts "No results found for keyword: #{keyword}"
-          take_screenshot("no_results.png")
-          exit
-        else
-          result_count = browser.ul(class: 'result-list').lis.length
-          puts "Found #{result_count} results for keyword: #{keyword}"
-          return true
-        end
-      rescue Watir::Wait::TimeoutError => e
-        puts "Timeout while searching: #{e.message}"
-        take_screenshot("search_timeout_error.png")
-        raise "Search operation timed out. Check screenshot: search_timeout_error.png"
-      rescue => e
-        puts "Error during search: #{e.message}"
-        take_screenshot("search_error.png")
-        raise "Search operation failed. Check screenshot: search_error.png"
-      end
-    end
-
-  def parse_second_section_content(id)
-    puts "Parsing content for result #{id}"
-    begin
-      browser.div(class: 'text').wait_until(&:present?)
-
-      sections = browser.div(class: 'text').sections
-      puts "Found #{sections.length} sections"
-
-      Dir.mkdir('scraped_data_bund') unless Dir.exist?('scraped_data_bund')
-
-      timestamp = Time.now.strftime('%Y%m%d_%H%M%S')
-
-      html_filename = File.join('scraped_data_bund', "job_#{id}_#{timestamp}.html")
-      screenshot_filename = File.join('scraped_data_bund', "job_#{id}_#{timestamp}.png")
-
-      puts "Taking screenshot: #{screenshot_filename}"
-      take_screenshot(screenshot_filename)
-
-      if sections.length >= 2
-        second_section_html = sections[1].html.strip
-        puts "Extracted second section HTML (length: #{second_section_html.length})"
-
-        if second_section_html.empty? || second_section_html.match(/^\s*<section>\s*(?:<!--[\s\S]*?-->)?\s*<\/section>\s*$/m)
-          puts "Second section is empty or contains only comments"
-
-          if sections.length >= 3
-            puts "Checking third section for URL"
-            third_section = sections[3]
-            url_link = third_section.a(href: /.*/)
-
-            if url_link.exists?
-              url = url_link.href
-              content = "<p>URL from third section: <a href=\"#{url}\">#{url}</a></p>"
-              File.write(html_filename, content)
-              return "Second section was empty, saved URL from third section to #{html_filename}"
-            end
-          end
-
-          File.write(html_filename, "<p>Second section contains only comments, no useful content found</p>")
-          return "Second section empty or contains only comments, saved to #{html_filename}"
-        else
-          File.write(html_filename, second_section_html)
-          return "Saved section content to #{html_filename}"
-        end
-      else
-        File.write(html_filename, "<p>Second section not found</p>")
-        return "Second section not found, created empty file #{html_filename}"
-      end
-    rescue => e
-      puts "Error parsing content: #{e.message}"
-      take_screenshot("parsing_error_#{id}.png")
-      raise "Content parsing failed for result #{id}. Check screenshot: parsing_error_#{id}.png"
-    end
-  end
-end
-
 class ScraperCLI
   include SiteHelper
 
@@ -907,7 +826,7 @@ class ScraperCLI
       portal: nil,
       keyword: "",
       results: 3,                    # default number of results
-      mode: "process",               # default mode: "process", "collect", or "extract"
+      job_postings: "process",       # default job postings mode: "process", "collect", or "extract"
       collect_count: 10_000,         # default number of job IDs to collect
       checkpoint_interval: 5,        # default checkpoint interval
       resume_checkpoint: nil,        # optional path to resume from checkpoint
@@ -929,9 +848,13 @@ class ScraperCLI
           ruby webscraper.rb --portal bund --keyword "Medieninformatiker" --results 5
 
           # Collect job IDs
-          ruby webscraper.rb --portal interamt --mode collect --collect-count 5000
-          ruby webscraper.rb --portal interamt --mode collect --checkpoint-interval 10
-          ruby webscraper.rb --portal interamt --mode collect --resume-from checkpoint_latest.json
+          ruby webscraper.rb --portal interamt --job-postings collect --collect-count 5000
+          ruby webscraper.rb --portal interamt --job-postings collect --checkpoint-interval 10
+          ruby webscraper.rb --portal interamt --job-postings collect --resume-from checkpoint_latest.json
+
+          # Extract job details from collected IDs
+          ruby webscraper.rb --portal interamt --job-postings extract --resume-from job_scraper_checkpoints/checkpoint_latest.json
+          ruby webscraper.rb --portal interamt --job-postings extract --resume-from job_checkpoints/latest_checkpoint.json --batch-size 10
 
         Available Options:
       BANNER
@@ -956,14 +879,14 @@ class ScraperCLI
         @options[:results] = n
       end
 
-      # Update mode options
-      opts.on("--mode MODE", ["process", "collect", "extract"],
+      # Update job-postings options
+      opts.on("--job-postings MODE", ["process", "collect", "extract"],
               "Operation mode:",
               "  process - process job details on search results",
               "  collect - collect job IDs only",
               "  extract - extract details for previously collected job IDs",
               "Default: 'process'") do |mode|
-        @options[:mode] = mode
+        @options[:job_postings] = mode
       end
 
       # Add the missing collect-count option
@@ -1006,8 +929,14 @@ class ScraperCLI
       exit 1
     end
 
-    if @options[:mode] == "collect" && @options[:portal] != "interamt"
+    if @options[:job_postings] == "collect" && @options[:portal] != "interamt"
       puts "Error: Collection mode is only supported for the interamt portal"
+      exit 1
+    end
+    
+    if @options[:job_postings] == "extract" && !@options[:resume_checkpoint]
+      puts "Error: --resume-from option is required for extract mode"
+      puts "Example: ruby webscraper.rb --portal interamt --job-postings extract --resume-from checkpoint_latest.json"
       exit 1
     end
   end
@@ -1028,39 +957,59 @@ class ScraperCLI
       when "interamt"
         interamt_page = site.interamt_page
 
-        case @options[:mode]
+        case @options[:job_postings]
         when "collect"
           puts "Starting job ID collection mode (Phase 1)"
           puts "Target count: #{@options[:collect_count]}, Checkpoint interval: #{@options[:checkpoint_interval]}"
 
-          if @options[:resume_checkpoint]
+          collected_jobs = if @options[:resume_checkpoint]
             puts "Resuming from checkpoint: #{@options[:resume_checkpoint]}"
             interamt_page.collect_all_job_ids(@options[:collect_count], @options[:checkpoint_interval], @options[:resume_checkpoint])
           else
             interamt_page.collect_all_job_ids(@options[:collect_count], @options[:checkpoint_interval])
           end
+          
+          puts "Collection complete. Run extraction phase with:"
+          puts "ruby webscraper.rb --portal interamt --job-postings extract --resume-from job_scraper_checkpoints/checkpoint_latest.json"
+          
         when "extract"
           puts "Starting job details extraction mode (Phase 2)"
 
           # Load the job IDs from checkpoint
-          if @options[:resume_checkpoint]
-            checkpoint_data = interamt_page.load_checkpoint(@options[:resume_checkpoint])
-            if checkpoint_data && checkpoint_data['jobs']
-              puts "Loaded #{checkpoint_data['jobs'].length} job IDs from checkpoint"
-              interamt_page.process_collected_job_ids(checkpoint_data['jobs'], @options[:batch_size])
+          checkpoint_path = @options[:resume_checkpoint]
+          if File.exist?(checkpoint_path)
+            checkpoint_data = interamt_page.load_checkpoint(checkpoint_path)
+            
+            if checkpoint_data && (checkpoint_data['jobs'] || checkpoint_data[:jobs])
+              # Handle both string and symbol keys
+              jobs = checkpoint_data['jobs'] || checkpoint_data[:jobs]
+              puts "Loaded #{jobs.length} job IDs from checkpoint"
+              
+              # Process the jobs with the specified batch size
+              interamt_page.process_collected_job_ids(jobs, @options[:batch_size])
             else
-              puts "Failed to load job IDs from checkpoint"
+              puts "Failed to load job IDs from checkpoint: Invalid format"
               exit 1
             end
           else
-            puts "Error: --resume-checkpoint option is required for extract mode"
+            puts "Error: Checkpoint file not found: #{checkpoint_path}"
             exit 1
           end
+          
         when "process"
-          puts "Starting job processing mode"
-          interamt_page.click_first_n_results(@options[:results], @options[:keyword])
+          puts "Starting complete job collection and processing"
+          
+          # First collect job IDs
+          collected_jobs = interamt_page.collect_all_job_ids(@options[:results])
+          puts "Collected #{collected_jobs.length} job IDs, now processing job details"
+          
+          # Then process their descriptions
+          interamt_page.process_job_descriptions(collected_jobs, @options[:batch_size])
         end
       end
+    rescue => e
+      puts "Error during execution: #{e.message}"
+      puts e.backtrace
     ensure
       site.close
     end

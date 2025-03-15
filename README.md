@@ -50,6 +50,33 @@ Available Options:
         --version                    Show version
 ```
 
+---
+
+
+Usage Examples
+To use the updated scraper:
+
+Collect job IDs only:
+
+```bash
+ruby webscraper.rb --portal interamt --job-postings collect --collect-count 5000
+```
+
+Extract job details from collected IDs:
+
+```bash
+ruby webscraper.rb --portal interamt --job-postings extract --resume-from job_scraper_checkpoints/checkpoint_latest.json --batch-size 10
+```
+
+
+Run the full process in one go (collect IDs and then extract descriptions):
+
+```bash
+ruby webscraper.rb --portal interamt --job-postings process --results 100
+```
+
+---
+
 ## Phase 1: Collect Job IDs
 
 Collect job IDs with a specified target count:
