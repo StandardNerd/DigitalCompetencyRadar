@@ -131,6 +131,15 @@ unless Dir.exist?('job_descriptions')
   exit 1
 end
 
+def clean_json_response(response_text)
+  # Remove any markdown code blocks
+  cleaned = response_text.gsub(/```(?:json)?\n?/, '')
+  # Remove any trailing backticks
+  cleaned = cleaned.gsub(/```\s*$/, '')
+  # Trim whitespace
+  cleaned.strip
+end
+
 # Process each job description file
 Dir.glob('job_descriptions/*.txt').each do |job_file_path|
   puts "Processing job description: #{job_file_path}"
@@ -186,14 +195,17 @@ Dir.glob('job_descriptions/*.txt').each do |job_file_path|
     # Get the response content
     result = response.dig('choices', 0, 'message', 'content')
     
+    # Clean the response before parsing
+    cleaned_result = clean_json_response(result)
+            
     # Attempt to parse the result as JSON
     begin
-      parsed_json = JSON.parse(result)
+      parsed_json = JSON.parse(cleaned_result)
       
       # Create the final result with metadata
       output = {
         source_file: File.basename(job_file_path),
-        processed_at: Time.now.iso8601,
+        processed_at: Time.now.strftime('%Y-%m-%dT%H:%M:%S%z'),
         classification_result: parsed_json
       }
       
