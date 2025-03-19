@@ -18,11 +18,17 @@ RUN apt-get update -qq && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install DuckDB
-RUN curl -LO https://github.com/duckdb/duckdb/releases/download/v0.8.1/duckdb_cli-linux-amd64.zip \
+RUN curl -LO https://github.com/duckdb/duckdb/releases/download/v1.2.1/duckdb_cli-linux-amd64.zip \
     && unzip duckdb_cli-linux-amd64.zip -d /usr/local/bin \
     && rm duckdb_cli-linux-amd64.zip \
     && chmod +x /usr/local/bin/duckdb
 
+RUN curl -LO https://github.com/duckdb/duckdb/releases/download/v1.2.1/libduckdb-linux-amd64.zip \
+    && unzip libduckdb-linux-amd64.zip \
+    && cp libduckdb.so /usr/local/lib/libduckdb.so \
+    && cp duckdb.h /usr/include \
+    && rm libduckdb-linux-amd64.zip
+    
 WORKDIR /app
 
 COPY Gemfile* ./

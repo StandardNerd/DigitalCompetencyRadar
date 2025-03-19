@@ -38,3 +38,24 @@ podman run -v $(pwd):/app webscraper ruby html2txt.rb
 podman run -v $(pwd):/app webscraper ruby digcomp_classification.rb
 ```
 
+## Using DuckDB
+
+```sql
+-- Example queries you could run
+-- Most common DigComp areas across all jobs
+SELECT digcomp_area, COUNT(*) as frequency 
+FROM job_competencies 
+GROUP BY digcomp_area 
+ORDER BY frequency DESC;
+
+-- Jobs requiring the most digital competencies
+SELECT job_title, COUNT(DISTINCT digcomp_id) as competency_count 
+FROM job_competencies 
+GROUP BY job_title 
+ORDER BY competency_count DESC;
+
+-- Average confidence by competency area
+SELECT digcomp_area, AVG(confidence) as avg_confidence 
+FROM job_competencies 
+GROUP BY digcomp_area;
+```

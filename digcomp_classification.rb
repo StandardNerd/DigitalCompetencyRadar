@@ -3,6 +3,7 @@
 require 'openai'
 require 'fileutils'
 require 'json'
+require 'duckdb'
 
 # API configuration
 access_token = ENV['API_KEY']
@@ -226,6 +227,34 @@ Dir.glob('job_descriptions/*.txt').each do |job_file_path|
   rescue => e
     puts "API call error: #{e.message}"
   end
+end
+
+
+db = DuckDB::Database.new
+con = db.connect
+
+# Create table if needed
+con.execute("CREATE TABLE IF NOT EXISTS job_competencies (
+  job_file TEXT, 
+  job_title TEXT, 
+  extracted_skill TEXT,
+  digcomp_area TEXT,
+  digcomp_id TEXT,
+  confidence INTEGER,
+  processed_at TIMESTAMP
+)")
+
+# Insert data from each processed job
+parsed_json['matches'].each do |match|
+  con.execute("INSERT INTO job_competencies VALUES (?, ?, ?, ?, ?, ?, ?)",
+    [File.basename(job_file_path),
+     parsed_json['job_title'],
+     match['extracted_skill'],
+     match['digcomp_area'],
+     match['digcomp_id'],
+     match['confidence'],
+     Time.now.strftime('%Y-%m-%dT%H:%M:%S')
+    ])
 end
 
 puts "All job descriptions processed successfully."
