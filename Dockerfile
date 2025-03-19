@@ -1,4 +1,4 @@
-FROM ruby:3.2-slim
+FROM ruby:3.4.2
 
 RUN apt-get update -qq && apt-get install -y \
     vim \
@@ -18,17 +18,13 @@ RUN apt-get update -qq && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install DuckDB
-RUN curl -LO https://github.com/duckdb/duckdb/releases/download/v1.2.1/duckdb_cli-linux-amd64.zip \
-    && unzip duckdb_cli-linux-amd64.zip -d /usr/local/bin \
-    && rm duckdb_cli-linux-amd64.zip \
-    && chmod +x /usr/local/bin/duckdb
-
 RUN curl -LO https://github.com/duckdb/duckdb/releases/download/v1.2.1/libduckdb-linux-amd64.zip \
-    && unzip libduckdb-linux-amd64.zip \
-    && cp libduckdb.so /usr/local/lib/libduckdb.so \
-    && cp duckdb.h /usr/include \
+    && unzip libduckdb-linux-amd64.zip -d libduckdb \
+    && mv libduckdb/duckdb.* /usr/local/include \
+    && mv libduckdb/libduckdb.so /usr/local/lib \
+    && ldconfig /usr/local/lib
     && rm libduckdb-linux-amd64.zip
-    
+
 WORKDIR /app
 
 COPY Gemfile* ./

@@ -141,6 +141,38 @@ def clean_json_response(response_text)
   cleaned.strip
 end
 
+# Try to initialize DuckDB with proper error handling
+begin
+  puts "Attempting to initialize DuckDB database..."
+  # Create database with no arguments (in-memory by default)
+  db = DuckDB::Database.new
+  puts "DuckDB database initialized successfully!"
+  
+  puts "Attempting to connect to database..."
+  con = db.connect
+  puts "Connected to database successfully!"
+  
+  puts "Creating table schema..."
+  con.execute("CREATE TABLE IF NOT EXISTS job_competencies (
+    job_file TEXT, 
+    job_title TEXT, 
+    extracted_skill TEXT,
+    digcomp_area TEXT,
+    digcomp_id TEXT,
+    confidence INTEGER,
+    processed_at TIMESTAMP
+  )")
+  puts "Table created successfully!"
+  
+rescue => e
+  puts "DuckDB Error: #{e.message}"
+  puts "DuckDB Error Class: #{e.class}"
+  puts "Backtrace: #{e.backtrace.join("\n")}"
+  puts "Will continue with file processing but skip database operations."
+  db = nil
+  con = nil
+end
+
 # Process each job description file
 Dir.glob('job_descriptions/*.txt').each do |job_file_path|
   puts "Processing job description: #{job_file_path}"
@@ -215,6 +247,33 @@ Dir.glob('job_descriptions/*.txt').each do |job_file_path|
       File.write(output_filename, JSON.pretty_generate(output))
       
       puts "Classification saved to: #{output_filename}"
+      
+      # Insert data from each processed job to DuckDB (if database is available)
+      if con && parsed_json['matches'] && !parsed_json['matches'].empty?
+        begin
+          parsed_json['matches'].each do |match|
+            con.execute("INSERT INTO job_competencies VALUES (?, ?, ?, ?, ?, ?, ?)",
+              [File.basename(job_file_path),
+               parsed_json['job_title'],
+               match['extracted_skill'],
+               match['digcomp_area'],
+               match['digcomp_id'],
+               match['confidence'],
+               Time.now.strftime('%Y-%m-%dT%H:%M:%S')
+              ])
+          end
+          puts "Data inserted into DuckDB for: #{File.basename(job_file_path)}"
+        rescue => e
+          puts "Failed to insert data into DuckDB: #{e.message}"
+        end
+      else
+        if !con
+          puts "Skipping database insert (no active connection)"
+        elsif !parsed_json['matches'] || parsed_json['matches'].empty?
+          puts "Warning: No matches found for #{File.basename(job_file_path)}"
+        end
+      end
+      
     rescue JSON::ParserError => e
       puts "Error parsing JSON response: #{e.message}"
       
@@ -229,32 +288,16 @@ Dir.glob('job_descriptions/*.txt').each do |job_file_path|
   end
 end
 
-
-db = DuckDB::Database.new
-con = db.connect
-
-# Create table if needed
-con.execute("CREATE TABLE IF NOT EXISTS job_competencies (
-  job_file TEXT, 
-  job_title TEXT, 
-  extracted_skill TEXT,
-  digcomp_area TEXT,
-  digcomp_id TEXT,
-  confidence INTEGER,
-  processed_at TIMESTAMP
-)")
-
-# Insert data from each processed job
-parsed_json['matches'].each do |match|
-  con.execute("INSERT INTO job_competencies VALUES (?, ?, ?, ?, ?, ?, ?)",
-    [File.basename(job_file_path),
-     parsed_json['job_title'],
-     match['extracted_skill'],
-     match['digcomp_area'],
-     match['digcomp_id'],
-     match['confidence'],
-     Time.now.strftime('%Y-%m-%dT%H:%M:%S')
-    ])
+# Close the database connection if it was opened
+if con
+  begin
+    puts "Closing database connection..."
+    con.close
+    db.close
+    puts "Database connection closed successfully."
+  rescue => e
+    puts "Error closing database connection: #{e.message}"
+  end
 end
 
 puts "All job descriptions processed successfully."
