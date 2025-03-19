@@ -1,0 +1,39 @@
+```
+{
+  "job_title": "Kommunaler Vollzugsbediensteter (m/w/d)",
+  "matches": [
+    {
+      "extracted_skill": "Entgegennahme, Bearbeitung und Weiterleitung von Bürgerbeschwerden",
+      "digcomp_area": "Information and Data Literacy",
+      "digcomp_id": "1.3",
+      "digcomp_description": "Managing data, information, and digital content.",
+      "confidence": 6,
+      "reasoning": "Although the job description doesn't explicitly mention digital tools, the process of receiving, processing, and forwarding citizen complaints likely involves managing digital information, hence the match with 1.3."
+    },
+    {
+      "extracted_skill": "Bewerbung per Mail",
+      "digcomp_area": "Communication and Collaboration",
+      "digcomp_id": "2.1",
+      "digcomp_description": "Interacting through digital technologies.",
+      "confidence": 9,
+      "reasoning": "The mention of email (per Mail) as a means of application directly corresponds to interacting through digital technologies."
+    },
+    {
+      "extracted_skill": "Job-Ticket (online ticketing implied)",
+      "digcomp_area": "Communication and Collaboration",
+      "digcomp_id": "2.1",
+      "digcomp_description": "Interacting through digital technologies.",
+      "confidence": 5,
+      "reasoning": "While not explicitly stated, the assumption is that a Job-Ticket might involve some form of digital interaction, though this is somewhat speculative."
+    },
+    {
+      "extracted_skill": "None explicitly mentioned for other areas",
+      "digcomp_area": "N/A",
+      "digcomp_id": "N/A",
+      "digcomp_description": "N/A",
+      "confidence": "N/A",
+      "reasoning": "The job description does not explicitly mention skills that clearly match other DigComp areas (Digital Content Creation, Safety, Problem-Solving)."
+    }
+  ]
+}
+```

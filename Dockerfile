@@ -1,36 +1,34 @@
-# Use Ruby 3.2 as the base image
 FROM ruby:3.2-slim
 
-# Install essential Linux packages
 RUN apt-get update -qq && apt-get install -y \
     vim \
     build-essential \
     nodejs \
     wget \
     unzip \
-    # Required for nokogiri
     libxml2-dev \
     libxslt-dev \
-    # Required for Chrome
     chromium \
     chromium-driver \
     libnss3 \
     libgconf-2-4 \
     libfontconfig1 \
-    # Clean up
+    curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
+# Install DuckDB
+RUN curl -LO https://github.com/duckdb/duckdb/releases/download/v0.8.1/duckdb_cli-linux-amd64.zip \
+    && unzip duckdb_cli-linux-amd64.zip -d /usr/local/bin \
+    && rm duckdb_cli-linux-amd64.zip \
+    && chmod +x /usr/local/bin/duckdb
+
 WORKDIR /app
 
-# Create Gemfile
 COPY Gemfile* ./
 
-# Install gems
 RUN bundle install
 
-# Copy the rest of the application
 COPY . .
 
 # Set environment variables
@@ -41,6 +39,9 @@ ENV LANG=C.UTF-8 \
 
 # Verify ChromeDriver installation
 RUN chromedriver --version
+
+# Verify DuckDB installation
+RUN duckdb --version
 
 # Command to run the scraper
 CMD ["ruby", "webscraper.rb"]
