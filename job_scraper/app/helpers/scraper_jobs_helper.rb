@@ -1,0 +1,2 @@
+module ScraperJobsHelper
+end

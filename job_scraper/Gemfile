@@ -1,0 +1,87 @@
+source "https://rubygems.org"
+
+# Bundle edge Rails instead: gem "rails", github: "rails/rails", branch: "main"
+gem "rails", "~> 8.0.2"
+# The modern asset pipeline for Rails [https://github.com/rails/propshaft]
+gem "propshaft"
+# Use postgresql as the database for Active Record
+gem "pg", "~> 1.1"
+# Use the Puma web server [https://github.com/puma/puma]
+gem "puma", ">= 5.0"
+# Use JavaScript with ESM import maps [https://github.com/rails/importmap-rails]
+gem "importmap-rails"
+# Hotwire's SPA-like page accelerator [https://turbo.hotwired.dev]
+gem "turbo-rails"
+# Hotwire's modest JavaScript framework [https://stimulus.hotwired.dev]
+gem "stimulus-rails"
+# Build JSON APIs with ease [https://github.com/rails/jbuilder]
+gem "jbuilder"
+
+# Use Active Model has_secure_password [https://guides.rubyonrails.org/active_model_basics.html#securepassword]
+# gem "bcrypt", "~> 3.1.7"
+
+# Windows does not include zoneinfo files, so bundle the tzinfo-data gem
+gem "tzinfo-data", platforms: %i[ windows jruby ]
+
+# Use the database-backed adapters for Rails.cache, Active Job, and Action Cable
+gem "solid_cache"
+gem "solid_queue"
+gem "solid_cable"
+
+# Reduces boot times through caching; required in config/boot.rb
+gem "bootsnap", require: false
+
+# Deploy this application anywhere as a Docker container [https://kamal-deploy.org]
+gem "kamal", require: false
+
+# Add HTTP asset caching/compression and X-Sendfile acceleration to Puma [https://github.com/basecamp/thruster/]
+gem "thruster", require: false
+
+# Use Active Storage variants [https://guides.rubyonrails.org/active_storage_overview.html#transforming-images]
+# gem "image_processing", "~> 1.2"
+
+gem "devise"
+gem "pundit"
+
+# Background processing and scheduling
+gem "sidekiq" # Background job processing
+gem "sidekiq-scheduler" # Job scheduling
+gem "sidekiq-status" # Track job status
+
+# Web scraping
+gem "watir" # Browser automation
+gem "selenium-webdriver" # WebDriver for Watir
+gem "webdrivers" # Keep WebDriver binaries updated
+
+# UI components
+gem "tailwindcss-rails" # CSS framework
+gem "view_component" # Reusable view components
+gem "pagy" # Pagination
+
+# Monitoring and error tracking
+gem "sentry-ruby" # Error tracking
+gem "sentry-rails" # Rails integration for Sentry
+
+group :development, :test do
+  gem "debug", platforms: %i[ mri windows ]
+  gem "rspec-rails" # Testing framework
+  gem "factory_bot_rails" # Test factories
+  gem "faker" # Generate fake data
+end
+
+group :development do
+  gem "web-console"
+  gem "rack-mini-profiler"
+  gem "spring" # Spring speeds up development
+  gem "annotate" # Annotate models
+  gem "bullet" # Detect N+1 queries
+  gem "brakeman", require: false # Security scanning
+  gem "rubocop", require: false # Code style checking
+  gem "rubocop-rails", require: false # Rails-specific rules
+end
+
+group :test do
+  gem "capybara" # System testing
+  gem "webmock" # Mock HTTP requests
+  gem "vcr" # Record HTTP interactions
+end

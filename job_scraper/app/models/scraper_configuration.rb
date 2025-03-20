@@ -1,0 +1,2 @@
+class ScraperConfiguration < ApplicationRecord
+end
