@@ -1,0 +1,116 @@
+<h1>Job Scraper Results</h1>
+
+<div class="container">
+  <div class="row">
+    <div class="col-md-10 offset-md-1">
+      <div class="card">
+        <div class="card-header">
+          <h2>Scraping Status</h2>
+        </div>
+        <div class="card-body">
+          <% if @status == 'running' %>
+            <div class="alert alert-info">
+              <h4><i class="bi bi-hourglass-split"></i> Scraping in progress...</h4>
+              <p>Please wait while we extract job descriptions. This may take several minutes depending on the number of jobs requested.</p>
+              <div class="progress">
+                <div class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 100%"></div>
+              </div>
+            </div>
+          <% elsif @status == 'completed' %>
+            <div class="alert alert-success">
+              <h4><i class="bi bi-check-circle"></i> Scraping completed!</h4>
+              <p>Successfully extracted <%= @job_data.length %> job descriptions.</p>
+            </div>
+
+            <h3>Job Extraction Summary</h3>
+            <table class="table table-striped">
+              <thead>
+                <tr>
+                  <th>Total Jobs</th>
+                  <th>Successful</th>
+                  <th>Failed</th>
+                  <th>Extraction Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><%= @job_data.length %></td>
+                  <td><%= @job_data.count { |j| j[:description_saved] } %></td>
+                  <td><%= @job_data.count { |j| !j[:description_saved] } %></td>
+                  <td><%= Time.now.strftime('%Y-%m-%d %H:%M:%S') %></td>
+                </tr>
+              </tbody>
+            </table>
+
+            <h3>Extracted Jobs</h3>
+            <div class="table-responsive">
+              <table class="table table-striped table-hover">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Authority</th>
+                    <th>Job Title</th>
+                    <th>Status</th>
+                    <th>Description File</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <% @job_data.each do |job| %>
+                    <tr>
+                      <td><%= job[:id] %></td>
+                      <td><%= job[:behoerde] %></td>
+                      <td><%= job[:stellenbezeichnung] %></td>
+                      <td>
+                        <% if job[:description_saved] %>
+                          <span class="badge bg-success">Success</span>
+                        <% else %>
+                          <span class="badge bg-danger">Failed</span>
+                        <% end %>
+                      </td>
+                      <td>
+                        <% if job[:description_file] %>
+                          <%= link_to "View", job[:description_file], target: "_blank", class: "btn btn-sm btn-primary" %>
+                        <% else %>
+                          N/A
+                        <% end %>
+                      </td>
+                    </tr>
+                  <% end %>
+                </tbody>
+              </table>
+            </div>
+          <% elsif @status == 'error' %>
+            <div class="alert alert-danger">
+              <h4><i class="bi bi-exclamation-triangle"></i> Error occurred during scraping</h4>
+              <p><%= @error_message %></p>
+            </div>
+          <% end %>
+
+          <div class="mt-4 text-center">
+            <%= link_to "Back to Scraper", scraper_index_path, class: "btn btn-primary" %>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .container {
+    margin-top: 30px;
+    margin-bottom: 50px;
+  }
+  .card {
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+  }
+  .card-header {
+    background-color: #f8f9fa;
+  }
+  .progress {
+    height: 25px;
+    margin-top: 15px;
+  }
+  .table-responsive {
+    margin-top: 20px;
+  }
+</style>
